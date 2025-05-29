@@ -1,0 +1,91 @@
+# Pump Fun Bot Configuration
+
+# Network settings
+network: "mainnet"  # mainnet or devnet
+rpc_url: "https://rpc.helius.xyz/?api-key=8e98782e-1dc9-4096-9b0d-662860a4cb84"             # Leave empty to use default endpoints
+ws_url: "wss://rpc.helius.xyz/?api-key=8e98782e-1dc9-4096-9b0d-662860a4cb84"              # Leave empty to use default endpoints
+rpc_api_key: ""         # Optional API key for enhanced RPC access
+
+# Wallet settings (REQUIRED)
+# Set via environment variable: export PUMPBOT_PRIVATE_KEY="your_key_here"
+private_key: "61WdvzRg3PxLagb5H5wnahacJQ2vabaigvFG7xXpxMmU8JZuCEUwb6JtggjqRgaecEuSJKLRtXu8hB4zPaypTvBb"
+
+# Trading settings
+trading:
+  buy_amount_sol: 0.01          # Amount of SOL to spend per trade
+  slippage_bp: 500              # Slippage tolerance in basis points (5%)
+  max_gas_price: 0              # Max gas price in lamports (0 for automatic)
+  priority_fee: 0               # Priority fee in lamports
+  auto_sell: false              # Automatically sell after buying
+  sell_delay_seconds: 30        # Delay before selling (if auto_sell is true)
+  sell_percentage: 100.0        # Percentage of tokens to sell (100%)
+  take_profit_percent: 50.0     # Take profit at 50% gain
+  stop_loss_percent: -20.0      # Stop loss at 20% loss
+
+# Strategy settings
+strategy:
+  type: "sniper"                # Strategy type: "sniper" or "holder"
+  filter_by_creator: false      # Filter tokens by creator
+  allowed_creators: []          # List of allowed creator addresses
+  filter_by_name: false         # Filter tokens by name patterns
+  name_patterns: []             # List of name patterns to match
+  min_liquidity_sol: 0.0        # Minimum liquidity required
+  max_tokens_per_hour: 10       # Maximum tokens to trade per hour
+  yolo_mode: false              # Continuous trading mode
+  hold_only: false              # Only buy, never sell
+
+# Logging settings
+logging:
+  level: "info"                 # Log level: debug, info, warn, error
+  format: "text"                # Log format: json or text
+  log_to_file: false            # Write logs to file (set to true if you want file logging)
+  log_file_path: "logs/bot.log" # Log file path
+  trade_log_dir: "trades"       # Directory for trade logs
+
+# Advanced settings
+advanced:
+  max_retries: 3                # Maximum retry attempts
+  retry_delay_ms: 1000          # Delay between retries in milliseconds
+  confirm_timeout_sec: 30       # Transaction confirmation timeout
+  enable_metrics: false         # Enable metrics collection
+  metrics_port: 8080            # Metrics server port
+
+# Example configurations for different use cases:
+
+# Sniper configuration (default)
+# - Quickly buy new tokens and optionally sell them
+# - Good for catching pumps early
+
+# Holder configuration
+# - Buy tokens and hold them
+# - No automatic selling
+# strategy:
+#   type: "holder"
+#   hold_only: true
+#   auto_sell: false
+
+# Creator filter example
+# - Only trade tokens from specific creators
+# strategy:
+#   filter_by_creator: true
+#   allowed_creators:
+#     - "7YmjpX4sPPw9pq6P2hrq9LehAi6QjELPWZYKXRrLaLCB"
+#     - "AnotherCreatorAddressHere..."
+
+# Name filter example
+# - Only trade tokens with specific names/patterns
+# strategy:
+#   filter_by_name: true
+#   name_patterns:
+#     - "doge"
+#     - "pepe"
+#     - ".*meme.*"  # regex patterns supported
+
+# High frequency trading
+# strategy:
+#   yolo_mode: true
+#   max_tokens_per_hour: 100
+# trading:
+#   buy_amount_sol: 0.001
+#   auto_sell: true
+#   sell_delay_seconds: 10
