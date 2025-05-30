@@ -3,6 +3,7 @@ package pumpfun
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -16,6 +17,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const CREATE_DISCRIMINATOR uint64 = 8530921459188068891
+
 // TokenEvent represents a new token creation event
 type TokenEvent struct {
 	Signature              string    `json:"signature"`
@@ -25,6 +28,7 @@ type TokenEvent struct {
 	BondingCurve           string    `json:"bonding_curve"`
 	AssociatedBondingCurve string    `json:"associated_bonding_curve"`
 	Creator                string    `json:"creator"`
+	User                   string    `json:"user"`
 	Name                   string    `json:"name"`
 	Symbol                 string    `json:"symbol"`
 	URI                    string    `json:"uri"`
@@ -95,7 +99,7 @@ func (l *Listener) GetTokenChannel() <-chan *TokenEvent {
 	return l.tokenChan
 }
 
-// handleLogsNotification handles logs notifications from WebSocket
+// handleLogsNotification handles logs notifications from WebSocket with enhanced processing
 func (l *Listener) handleLogsNotification(data interface{}) error {
 	notification, ok := data.(solana.LogsNotification)
 	if !ok {
@@ -104,6 +108,7 @@ func (l *Listener) handleLogsNotification(data interface{}) error {
 
 	// Skip if transaction failed
 	if notification.Result.Value.Err != nil {
+		l.logger.WithField("signature", notification.Result.Value.Signature).Debug("Skipping failed transaction")
 		return nil
 	}
 
@@ -112,256 +117,145 @@ func (l *Listener) handleLogsNotification(data interface{}) error {
 	slot := notification.Result.Context.Slot
 
 	l.logger.WithFields(logrus.Fields{
-		"signature": signature,
-		"slot":      slot,
-		"logs":      len(logs),
+		"signature":  signature,
+		"slot":       slot,
+		"logs_count": len(logs),
 	}).Debug("Processing logs notification")
 
-	// Check if this is a create instruction
-	if !l.isCreateInstruction(logs) {
-		return nil // Not a token creation, skip
+	// Process program logs to extract token information
+	tokenInfo, err := l.processProgramLogs(logs, signature, slot)
+	if err != nil {
+		l.logger.WithError(err).WithField("signature", signature).Debug("Failed to process program logs")
+		return nil
 	}
 
-	// Process the transaction to extract token information
-	go l.processTransaction(signature, slot)
+	if tokenInfo == nil {
+		l.logger.WithField("signature", signature).Debug("No token creation found in logs")
+		return nil
+	}
+
+	l.logger.LogTokenDiscovered(tokenInfo.Mint, tokenInfo.Creator, tokenInfo.Name, tokenInfo.Symbol)
+
+	// Send token event to channel
+	select {
+	case l.tokenChan <- tokenInfo:
+		l.logger.WithFields(logrus.Fields{
+			"mint":    tokenInfo.Mint,
+			"creator": tokenInfo.Creator,
+			"name":    tokenInfo.Name,
+			"symbol":  tokenInfo.Symbol,
+		}).Info("New token discovered from logs")
+	case <-l.ctx.Done():
+		return nil
+	default:
+		l.logger.Warn("Token channel full, dropping event")
+	}
 
 	return nil
 }
 
-// isCreateInstruction checks if logs contain a create instruction
-func (l *Listener) isCreateInstruction(logs []string) bool {
+// processProgramLogs processes program logs to extract token creation information
+func (l *Listener) processProgramLogs(logs []string, signature string, slot uint64) (*TokenEvent, error) {
+	var processLogs bool
+
+	// Check if this is a token creation
 	for _, log := range logs {
-		// Look for pump.fun create instruction patterns
-		if strings.Contains(log, "Program log: Instruction: Create") ||
-			strings.Contains(log, "create") ||
-			strings.Contains(log, "Create") {
-			return true
-		}
-	}
-	return false
-}
-
-// processTransaction processes a transaction to extract token information
-func (l *Listener) processTransaction(signature string, slot uint64) {
-	l.logger.WithField("signature", signature).Debug("Processing transaction")
-
-	// Add delay to ensure transaction is available
-	time.Sleep(2 * time.Second)
-
-	ctx, cancel := context.WithTimeout(l.ctx, 30*time.Second)
-	defer cancel()
-
-	// Get transaction details
-	tx, err := l.rpcClient.GetTransaction(ctx, signature)
-	if err != nil {
-		l.logger.WithError(err).WithField("signature", signature).Error("Failed to get transaction")
-		return
-	}
-
-	// Extract token information from transaction
-	tokenEvent, err := l.extractTokenEvent(tx, signature, slot)
-	if err != nil {
-		l.logger.WithError(err).WithField("signature", signature).Error("Failed to extract token event")
-		return
-	}
-
-	if tokenEvent == nil {
-		return // Not a token creation transaction
-	}
-
-	l.logger.LogTokenDiscovered(tokenEvent.Mint, tokenEvent.Creator, tokenEvent.Name, tokenEvent.Symbol)
-
-	// Send token event to channel
-	select {
-	case l.tokenChan <- tokenEvent:
-		l.logger.WithFields(logrus.Fields{
-			"mint":    tokenEvent.Mint,
-			"creator": tokenEvent.Creator,
-			"name":    tokenEvent.Name,
-			"symbol":  tokenEvent.Symbol,
-		}).Info("New token discovered")
-	case <-l.ctx.Done():
-		return
-	default:
-		l.logger.Warn("Token channel full, dropping event")
-	}
-}
-
-// extractTokenEvent extracts token creation information from transaction
-func (l *Listener) extractTokenEvent(tx *solana.TransactionResponse, signature string, slot uint64) (*TokenEvent, error) {
-	if tx == nil || tx.Transaction == nil {
-		return nil, fmt.Errorf("invalid transaction data")
-	}
-
-	// Get transaction message
-	message, ok := tx.Transaction["message"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid transaction message")
-	}
-
-	// Get instructions
-	instructions, ok := message["instructions"].([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid transaction instructions")
-	}
-
-	// Get account keys
-	accountKeys, ok := message["accountKeys"].([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid account keys")
-	}
-
-	// Look for pump.fun create instruction
-	for _, inst := range instructions {
-		instruction, ok := inst.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		// Check if this is a pump.fun instruction
-		programIdIndex, ok := instruction["programIdIndex"].(float64)
-		if !ok {
-			continue
-		}
-
-		if int(programIdIndex) >= len(accountKeys) {
-			continue
-		}
-
-		programId, ok := accountKeys[int(programIdIndex)].(string)
-		if !ok {
-			continue
-		}
-
-		// Check if this is the pump.fun program
-		pumpFunProgramID := base58.Encode(config.PumpFunProgramID)
-		if programId != pumpFunProgramID {
-			continue
-		}
-
-		// This is a pump.fun instruction, extract token data
-		return l.extractTokenFromInstruction(instruction, accountKeys, tx, signature, slot)
-	}
-
-	return nil, nil // No pump.fun create instruction found
-}
-
-// extractTokenFromInstruction extracts token information from pump.fun instruction
-func (l *Listener) extractTokenFromInstruction(instruction map[string]interface{}, accountKeys []interface{}, tx *solana.TransactionResponse, signature string, slot uint64) (*TokenEvent, error) {
-	// Get instruction data
-	dataStr, ok := instruction["data"].(string)
-	if !ok {
-		return nil, fmt.Errorf("invalid instruction data")
-	}
-
-	// Decode base58 instruction data
-	data, err := base58.Decode(dataStr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode instruction data: %w", err)
-	}
-
-	// Check if this is a create instruction (first 8 bytes should match discriminator)
-	if len(data) < 8 {
-		return nil, fmt.Errorf("instruction data too short")
-	}
-
-	// For now, we'll extract account addresses from the instruction accounts
-	// In a full implementation, we would decode the instruction data properly
-
-	accounts, ok := instruction["accounts"].([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid instruction accounts")
-	}
-
-	if len(accounts) < 3 {
-		return nil, fmt.Errorf("insufficient accounts for create instruction")
-	}
-
-	// Extract key account addresses
-	var mint, creator, bondingCurve string
-
-	// Mint is typically the first account
-	if mintIndex, ok := accounts[0].(float64); ok && int(mintIndex) < len(accountKeys) {
-		if mintAddr, ok := accountKeys[int(mintIndex)].(string); ok {
-			mint = mintAddr
+		if strings.Contains(log, "Program log: Instruction: Create") {
+			processLogs = true
+			break
 		}
 	}
 
-	// Creator/payer is typically one of the early accounts
-	if creatorIndex, ok := accounts[1].(float64); ok && int(creatorIndex) < len(accountKeys) {
-		if creatorAddr, ok := accountKeys[int(creatorIndex)].(string); ok {
-			creator = creatorAddr
+	// Skip swaps as the first condition may pass them
+	for _, log := range logs {
+		if strings.Contains(log, "Program log: Instruction: CreateTokenAccount") {
+			processLogs = false
+			break
 		}
 	}
 
-	// Look for bonding curve in the accounts
-	for i, acc := range accounts {
-		if accIndex, ok := acc.(float64); ok && int(accIndex) < len(accountKeys) {
-			if addr, ok := accountKeys[int(accIndex)].(string); ok {
-				// Simple heuristic: bonding curve addresses are usually longer/different pattern
-				// In production, we'd have proper account identification
-				if i >= 2 && bondingCurve == "" {
-					bondingCurve = addr
-					break
-				}
+	if !processLogs {
+		return nil, nil
+	}
+
+	for _, log := range logs {
+		// Check for pump.fun program log patterns
+		if strings.Contains(log, "Program data: ") {
+			logContent := strings.TrimPrefix(log, "Program data: ")
+			tokenEvent, err := l.extractTokenFromData(logContent, signature, slot)
+			if err == nil {
+				return tokenEvent, err
 			}
 		}
 	}
 
-	if mint == "" || creator == "" {
-		return nil, fmt.Errorf("could not extract required addresses")
-	}
-
-	// Create token event with basic information
-	tokenEvent := &TokenEvent{
-		Signature:    signature,
-		Slot:         slot,
-		Mint:         mint,
-		Creator:      creator,
-		BondingCurve: bondingCurve,
-		Timestamp:    time.Now(),
-	}
-
-	// Get block time if available
-	if tx.BlockTime != nil {
-		tokenEvent.BlockTime = *tx.BlockTime
-	}
-
-	// Try to get token metadata (name, symbol, URI)
-	go l.enrichTokenMetadata(tokenEvent)
-
-	return tokenEvent, nil
+	return nil, nil
 }
 
-// enrichTokenMetadata tries to get additional token metadata
-func (l *Listener) enrichTokenMetadata(event *TokenEvent) {
-	ctx, cancel := context.WithTimeout(l.ctx, 10*time.Second)
-	defer cancel()
+func (l *Listener) extractTokenFromData(dataStr string, signature string, slot uint64) (*TokenEvent, error) {
+	tokenEvent := &TokenEvent{
+		Signature: signature,
+		Slot:      slot,
+		Timestamp: time.Now(),
+	}
 
-	// Try to get mint account info to extract metadata
-	accountInfo, err := l.rpcClient.GetAccountInfo(ctx, event.Mint)
+	data, err := decodeDataString(dataStr)
 	if err != nil {
-		l.logger.WithError(err).WithField("mint", event.Mint).Debug("Failed to get mint account info")
-		return
+		return nil, err
+	}
+	if len(data) < 8 {
+		return nil, fmt.Errorf("too short for discriminator")
+	}
+	discriminator := binary.LittleEndian.Uint64(data[:8])
+	if discriminator != CREATE_DISCRIMINATOR {
+		return nil, fmt.Errorf("not a CreateInstruction discriminator: %x", discriminator)
+	}
+	offset := 8
+	readString := func() (string, error) {
+		if offset+4 > len(data) {
+			return "", fmt.Errorf("not enough data for string length")
+		}
+		l := binary.LittleEndian.Uint32(data[offset : offset+4])
+		offset += 4
+		if offset+int(l) > len(data) {
+			return "", fmt.Errorf("not enough data for string value")
+		}
+		val := string(data[offset : offset+int(l)])
+		offset += int(l)
+		return val, nil
+	}
+	readPubKey := func() (string, error) {
+		if offset+32 > len(data) {
+			return "", fmt.Errorf("not enough data for pubkey")
+		}
+		val := base58.Encode(data[offset : offset+32])
+		offset += 32
+		return val, nil
 	}
 
-	if accountInfo == nil || len(accountInfo.Data) == 0 {
-		return
+	if tokenEvent.Name, err = readString(); err != nil {
+		return nil, err
+	}
+	if tokenEvent.Symbol, err = readString(); err != nil {
+		return nil, err
+	}
+	if tokenEvent.URI, err = readString(); err != nil {
+		return nil, err
+	}
+	if tokenEvent.Mint, err = readPubKey(); err != nil {
+		return nil, err
+	}
+	if tokenEvent.BondingCurve, err = readPubKey(); err != nil {
+		return nil, err
+	}
+	if tokenEvent.User, err = readPubKey(); err != nil {
+		return nil, err
+	}
+	if tokenEvent.Creator, err = readPubKey(); err != nil {
+		return nil, err
 	}
 
-	// Decode mint account data
-	// For now, we'll use placeholder values
-	// In production, we'd properly decode the mint account and metadata
-	event.Name = "Unknown Token"
-	event.Symbol = "UNK"
-	event.URI = ""
-	event.InitialPrice = 0.0
-
-	l.logger.WithFields(logrus.Fields{
-		"mint":   event.Mint,
-		"name":   event.Name,
-		"symbol": event.Symbol,
-	}).Debug("Enriched token metadata")
+	return tokenEvent, nil
 }
 
 // processTokenEvents processes token events from the channel
@@ -394,29 +288,33 @@ func (l *Listener) processTokenEvents() {
 // logTokenEvent logs a token event
 func (l *Listener) logTokenEvent(event *TokenEvent) {
 	l.logger.WithFields(logrus.Fields{
-		"event":         "new_token",
-		"mint":          event.Mint,
-		"creator":       event.Creator,
-		"name":          event.Name,
-		"symbol":        event.Symbol,
-		"signature":     event.Signature,
-		"slot":          event.Slot,
-		"block_time":    event.BlockTime,
-		"bonding_curve": event.BondingCurve,
-		"timestamp":     event.Timestamp,
-	}).Info("New pump.fun token detected")
+		"event":                    "new_token_from_logs",
+		"mint":                     event.Mint,
+		"creator":                  event.Creator,
+		"name":                     event.Name,
+		"symbol":                   event.Symbol,
+		"signature":                event.Signature,
+		"slot":                     event.Slot,
+		"block_time":               event.BlockTime,
+		"bonding_curve":            event.BondingCurve,
+		"associated_bonding_curve": event.AssociatedBondingCurve,
+		"uri":                      event.URI,
+		"initial_price":            event.InitialPrice,
+		"timestamp":                event.Timestamp,
+	}).Info("New pump.fun token detected from program logs")
 }
 
-// Helper function to convert hex string to bytes
-func hexToBytes(hexStr string) ([]byte, error) {
-	// Remove 0x prefix if present
-	if strings.HasPrefix(hexStr, "0x") {
-		hexStr = hexStr[2:]
+func decodeDataString(dataStr string) ([]byte, error) {
+	dataStr = strings.TrimSpace(dataStr)
+
+	data, err := base64.StdEncoding.DecodeString(dataStr)
+	if err == nil {
+		return data, nil
 	}
-	return hex.DecodeString(hexStr)
-}
 
-// Helper function to convert base64 string to bytes
-func base64ToBytes(b64Str string) ([]byte, error) {
-	return base64.StdEncoding.DecodeString(b64Str)
+	data, err = hex.DecodeString(dataStr)
+	if err == nil {
+		return data, nil
+	}
+	return nil, fmt.Errorf("unknown encoding (not base64 or hex)")
 }
