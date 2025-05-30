@@ -79,11 +79,6 @@ func (l *Listener) Start() error {
 		return fmt.Errorf("failed to subscribe to logs: %w", err)
 	}
 
-	l.logger.WithField("program_id", pumpFunProgramID).Info("Subscribed to pump.fun logs")
-
-	// Start token event processor
-	go l.processTokenEvents()
-
 	return nil
 }
 
@@ -134,17 +129,10 @@ func (l *Listener) handleLogsNotification(data interface{}) error {
 		return nil
 	}
 
-	l.logger.LogTokenDiscovered(tokenInfo.Mint, tokenInfo.Creator, tokenInfo.Name, tokenInfo.Symbol)
-
 	// Send token event to channel
 	select {
 	case l.tokenChan <- tokenInfo:
-		l.logger.WithFields(logrus.Fields{
-			"mint":    tokenInfo.Mint,
-			"creator": tokenInfo.Creator,
-			"name":    tokenInfo.Name,
-			"symbol":  tokenInfo.Symbol,
-		}).Info("New token discovered from logs")
+		l.logger.LogTokenDiscovered(tokenInfo.Mint, tokenInfo.Creator, tokenInfo.Name, tokenInfo.Symbol)
 	case <-l.ctx.Done():
 		return nil
 	default:
@@ -256,33 +244,6 @@ func (l *Listener) extractTokenFromData(dataStr string, signature string, slot u
 	}
 
 	return tokenEvent, nil
-}
-
-// processTokenEvents processes token events from the channel
-func (l *Listener) processTokenEvents() {
-	l.logger.Info("Started token event processor")
-	defer l.logger.Info("Token event processor stopped")
-
-	for {
-		select {
-		case <-l.ctx.Done():
-			return
-		case event, ok := <-l.tokenChan:
-			if !ok {
-				return
-			}
-
-			l.logger.WithFields(logrus.Fields{
-				"mint":      event.Mint,
-				"creator":   event.Creator,
-				"signature": event.Signature,
-			}).Info("Processing token event")
-
-			// Here we would pass the event to the trading logic
-			// For now, just log it
-			l.logTokenEvent(event)
-		}
-	}
 }
 
 // logTokenEvent logs a token event

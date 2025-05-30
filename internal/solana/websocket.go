@@ -272,7 +272,7 @@ func (ws *WSClient) SubscribeToLogs(programID string, handler EventHandler) (int
 		params = []interface{}{
 			"all",
 			map[string]interface{}{
-				"commitment": "confirmed",
+				"commitment": "processed",
 			},
 		}
 	} else {
@@ -282,7 +282,7 @@ func (ws *WSClient) SubscribeToLogs(programID string, handler EventHandler) (int
 				"mentions": []string{programID},
 			},
 			map[string]interface{}{
-				"commitment": "confirmed",
+				"commitment": "processed",
 			},
 		}
 	}
