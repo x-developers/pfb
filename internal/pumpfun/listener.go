@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/blocto/solana-go-sdk/common"
 	"strings"
 	"time"
 
@@ -20,20 +21,20 @@ const CREATE_DISCRIMINATOR uint64 = 8530921459188068891
 
 // TokenEvent represents a new token creation event
 type TokenEvent struct {
-	Signature              string    `json:"signature"`
-	Slot                   uint64    `json:"slot"`
-	BlockTime              int64     `json:"block_time"`
-	Mint                   string    `json:"mint"`
-	BondingCurve           string    `json:"bonding_curve"`
-	AssociatedBondingCurve string    `json:"associated_bonding_curve"`
-	Creator                string    `json:"creator"`
-	CreatorVault           string    `json:"creator_vault"`
-	User                   string    `json:"user"`
-	Name                   string    `json:"name"`
-	Symbol                 string    `json:"symbol"`
-	URI                    string    `json:"uri"`
-	InitialPrice           float64   `json:"initial_price"`
-	Timestamp              time.Time `json:"timestamp"`
+	Signature              string            `json:"signature"`
+	Slot                   uint64            `json:"slot"`
+	BlockTime              int64             `json:"block_time"`
+	Mint                   *common.PublicKey `json:"mint"`
+	BondingCurve           *common.PublicKey `json:"bonding_curve"`
+	AssociatedBondingCurve *common.PublicKey `json:"associated_bonding_curve"`
+	Creator                *common.PublicKey `json:"creator"`
+	CreatorVault           *common.PublicKey `json:"creator_vault"`
+	User                   *common.PublicKey `json:"user"`
+	Name                   string            `json:"name"`
+	Symbol                 string            `json:"symbol"`
+	URI                    string            `json:"uri"`
+	InitialPrice           float64           `json:"initial_price"`
+	Timestamp              time.Time         `json:"timestamp"`
 }
 
 // Listener listens for new pump.fun tokens
@@ -134,7 +135,7 @@ func (l *Listener) handleLogsNotification(data interface{}) error {
 	// Send token event to channel
 	select {
 	case l.tokenChan <- tokenInfo:
-		l.logger.LogTokenDiscovered(tokenInfo.Mint, tokenInfo.Creator, tokenInfo.Name, tokenInfo.Symbol)
+		l.logger.LogTokenDiscovered(tokenInfo.Mint.String(), tokenInfo.Creator.String(), tokenInfo.Name, tokenInfo.Symbol)
 	case <-l.ctx.Done():
 		return nil
 	default:
@@ -214,13 +215,13 @@ func (l *Listener) extractTokenFromData(dataStr string, signature string, slot u
 		offset += int(l)
 		return val, nil
 	}
-	readPubKey := func() (string, error) {
+	readPubKey := func() (*common.PublicKey, error) {
 		if offset+32 > len(data) {
-			return "", fmt.Errorf("not enough data for pubkey")
+			return nil, fmt.Errorf("not enough data for pubkey")
 		}
-		val := base58.Encode(data[offset : offset+32])
+		val := common.PublicKeyFromBytes(data[offset : offset+32])
 		offset += 32
-		return val, nil
+		return &val, nil
 	}
 
 	if tokenEvent.Name, err = readString(); err != nil {
@@ -244,17 +245,11 @@ func (l *Listener) extractTokenFromData(dataStr string, signature string, slot u
 	if tokenEvent.Creator, err = readPubKey(); err != nil {
 		return nil, err
 	}
-
-	derivedCreatorVault, _, err := l.pdaDerivation.DeriveCreatorVault(tokenEvent.Creator)
-	if err == nil {
-		tokenEvent.CreatorVault = derivedCreatorVault.String()
+	if tokenEvent.CreatorVault, _, err = l.pdaDerivation.DeriveCreatorVault(*tokenEvent.Creator); err != nil {
+		return nil, err
 	}
-
-	derivedAssociatedBondingCurve, _, err := l.pdaDerivation.DeriveAssociatedBondingCurve(tokenEvent.Mint, tokenEvent.BondingCurve)
-	if err == nil {
-		tokenEvent.AssociatedBondingCurve = derivedAssociatedBondingCurve.String()
-	} else {
-		l.logger.WithError(err).WithField("mint", tokenEvent.Mint).Warn("Failed to derive PDA addresses, using extracted values")
+	if tokenEvent.AssociatedBondingCurve, _, err = l.pdaDerivation.DeriveAssociatedBondingCurve(*tokenEvent.Mint, *tokenEvent.BondingCurve); err != nil {
+		return nil, err
 	}
 
 	return tokenEvent, nil

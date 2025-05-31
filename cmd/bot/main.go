@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/blocto/solana-go-sdk/common"
 	"os"
 	"os/signal"
 	"strings"
@@ -303,7 +304,7 @@ func (a *App) processTokenEvent(event *pumpfun.TokenEvent) error {
 
 		// If auto-sell is enabled and not in hold mode, schedule sell
 		if a.config.Trading.AutoSell && !a.config.Strategy.HoldOnly && !*holdOnly {
-			go a.scheduleSell(event.Mint, result.AmountTokens)
+			go a.scheduleSell(event.Mint.String(), result.AmountTokens)
 		}
 	} else {
 		a.logger.WithFields(map[string]interface{}{
@@ -324,12 +325,12 @@ func (a *App) passesFilters(event *pumpfun.TokenEvent) bool {
 			if strings.Contains(strings.ToLower(event.Name), strings.ToLower(pattern)) ||
 				strings.Contains(strings.ToLower(event.Symbol), strings.ToLower(pattern)) {
 				nameMatch = true
-				a.logger.LogFilterMatch(event.Mint, "name", pattern)
+				a.logger.LogFilterMatch(event.Mint.String(), "name", pattern)
 				break
 			}
 		}
 		if !nameMatch {
-			a.logger.LogFilterReject(event.Mint, "name", "no pattern match")
+			a.logger.LogFilterReject(event.Mint.String(), "name", "no pattern match")
 			return false
 		}
 	}
@@ -338,14 +339,14 @@ func (a *App) passesFilters(event *pumpfun.TokenEvent) bool {
 	if a.config.Strategy.FilterByCreator && len(a.config.Strategy.AllowedCreators) > 0 {
 		creatorMatch := false
 		for _, allowedCreator := range a.config.Strategy.AllowedCreators {
-			if event.Creator == allowedCreator {
+			if event.Creator.String() == allowedCreator {
 				creatorMatch = true
-				a.logger.LogFilterMatch(event.Mint, "creator", allowedCreator)
+				a.logger.LogFilterMatch(event.Mint.String(), "creator", allowedCreator)
 				break
 			}
 		}
 		if !creatorMatch {
-			a.logger.LogFilterReject(event.Mint, "creator", "not in allowed list")
+			a.logger.LogFilterReject(event.Mint.String(), "creator", "not in allowed list")
 			return false
 		}
 	}
@@ -354,15 +355,15 @@ func (a *App) passesFilters(event *pumpfun.TokenEvent) bool {
 	if *matchPattern != "" {
 		if !strings.Contains(strings.ToLower(event.Name), strings.ToLower(*matchPattern)) &&
 			!strings.Contains(strings.ToLower(event.Symbol), strings.ToLower(*matchPattern)) {
-			a.logger.LogFilterReject(event.Mint, "cli_match", "pattern not found")
+			a.logger.LogFilterReject(event.Mint.String(), "cli_match", "pattern not found")
 			return false
 		}
-		a.logger.LogFilterMatch(event.Mint, "cli_match", *matchPattern)
+		a.logger.LogFilterMatch(event.Mint.String(), "cli_match", *matchPattern)
 	}
 
 	// CLI creator filter
-	if *creatorFilter != "" && event.Creator != *creatorFilter {
-		a.logger.LogFilterReject(event.Mint, "cli_creator", "creator mismatch")
+	if *creatorFilter != "" && event.Creator.String() != *creatorFilter {
+		a.logger.LogFilterReject(event.Mint.String(), "cli_creator", "creator mismatch")
 		return false
 	}
 
@@ -382,7 +383,7 @@ func (a *App) scheduleSell(mint string, amount uint64) {
 	// Calculate sell amount
 	sellAmount := uint64(float64(amount) * (a.config.Trading.SellPercentage / 100.0))
 
-	result, err := a.trader.SellToken(a.ctx, mint, sellAmount)
+	result, err := a.trader.SellToken(a.ctx, common.PublicKeyFromString(mint), sellAmount)
 	if err != nil {
 		a.logger.WithError(err).WithField("mint", mint).Error("❌ Scheduled sell failed")
 		return

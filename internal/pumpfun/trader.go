@@ -3,6 +3,7 @@ package pumpfun
 import (
 	"context"
 	"fmt"
+	"github.com/blocto/solana-go-sdk/common"
 	"time"
 
 	"pump-fun-bot-go/internal/config"
@@ -31,31 +32,31 @@ type Trader struct {
 
 // TokenInfo stores information about purchased tokens
 type TokenInfo struct {
-	Mint                   string    `json:"mint"`
-	BondingCurve           string    `json:"bonding_curve"`
-	AssociatedBondingCurve string    `json:"associated_bonding_curve"`
-	Creator                string    `json:"creator"`
-	Name                   string    `json:"name"`
-	Symbol                 string    `json:"symbol"`
-	PurchasePrice          float64   `json:"purchase_price"`
-	PurchaseTime           time.Time `json:"purchase_time"`
-	Amount                 uint64    `json:"amount"`
+	Mint                   common.PublicKey `json:"mint"`
+	BondingCurve           common.PublicKey `json:"bonding_curve"`
+	AssociatedBondingCurve common.PublicKey `json:"associated_bonding_curve"`
+	Creator                common.PublicKey `json:"creator"`
+	Name                   string           `json:"name"`
+	Symbol                 string           `json:"symbol"`
+	PurchasePrice          float64          `json:"purchase_price"`
+	PurchaseTime           time.Time        `json:"purchase_time"`
+	Amount                 uint64           `json:"amount"`
 }
 
 // TradeResult represents the result of a trade operation
 type TradeResult struct {
-	Success         bool      `json:"success"`
-	Signature       string    `json:"signature"`
-	Type            string    `json:"type"` // "buy" or "sell"
-	Mint            string    `json:"mint"`
-	AmountSOL       float64   `json:"amount_sol"`
-	AmountTokens    uint64    `json:"amount_tokens"`
-	Price           float64   `json:"price"`
-	SlippagePercent float64   `json:"slippage_percent"`
-	GasFee          uint64    `json:"gas_fee"`
-	Timestamp       time.Time `json:"timestamp"`
-	ProfitLoss      float64   `json:"profit_loss,omitempty"` // For sell trades
-	Error           string    `json:"error,omitempty"`
+	Success         bool             `json:"success"`
+	Signature       string           `json:"signature"`
+	Type            string           `json:"type"` // "buy" or "sell"
+	Mint            common.PublicKey `json:"mint"`
+	AmountSOL       float64          `json:"amount_sol"`
+	AmountTokens    uint64           `json:"amount_tokens"`
+	Price           float64          `json:"price"`
+	SlippagePercent float64          `json:"slippage_percent"`
+	GasFee          uint64           `json:"gas_fee"`
+	Timestamp       time.Time        `json:"timestamp"`
+	ProfitLoss      float64          `json:"profit_loss,omitempty"` // For sell trades
+	Error           string           `json:"error,omitempty"`
 }
 
 func NewTrader(wallet *wallet.Wallet, rpcClient *solana.Client, priceCalc *PriceCalculator,
@@ -90,7 +91,7 @@ func (t *Trader) BuyToken(ctx context.Context, event *TokenEvent) (*TradeResult,
 
 	result := &TradeResult{
 		Type:      "buy",
-		Mint:      event.Mint,
+		Mint:      *event.Mint,
 		Timestamp: time.Now(),
 	}
 
@@ -115,7 +116,7 @@ func (t *Trader) BuyToken(ctx context.Context, event *TokenEvent) (*TradeResult,
 	}
 
 	// Create or get ATA
-	ata, created, err := t.wallet.CreateATAIfNeeded(ctx, event.Mint)
+	ata, created, err := t.wallet.CreateATAIfNeeded(ctx, event.Mint.String())
 	if err != nil {
 		result.Error = fmt.Sprintf("failed to create ATA: %v", err)
 		return result, err
@@ -146,11 +147,11 @@ func (t *Trader) BuyToken(ctx context.Context, event *TokenEvent) (*TradeResult,
 	result.GasFee = gasFee
 
 	// Store token info for future selling
-	t.tokenRegistry[event.Mint] = &TokenInfo{
-		Mint:                   event.Mint,
-		BondingCurve:           event.BondingCurve,
-		AssociatedBondingCurve: event.AssociatedBondingCurve,
-		Creator:                event.Creator,
+	t.tokenRegistry[event.Mint.String()] = &TokenInfo{
+		Mint:                   *event.Mint,
+		BondingCurve:           *event.BondingCurve,
+		AssociatedBondingCurve: *event.AssociatedBondingCurve,
+		Creator:                *event.Creator,
 		Name:                   event.Name,
 		Symbol:                 event.Symbol,
 		PurchasePrice:          actualPrice,
@@ -160,7 +161,7 @@ func (t *Trader) BuyToken(ctx context.Context, event *TokenEvent) (*TradeResult,
 
 	// Log successful trade
 	err = t.tradeLogger.LogBuy(
-		event.Mint, event.Name, event.Symbol, event.Creator,
+		event.Mint.String(), event.Name, event.Symbol, event.Creator.String(),
 		buyAmountSOL, float64(actualTokens), actualPrice,
 		signature, "success", "", gasFee,
 		t.config.Trading.SlippageBP, t.config.Strategy.Type,
@@ -183,7 +184,7 @@ func (t *Trader) BuyToken(ctx context.Context, event *TokenEvent) (*TradeResult,
 }
 
 // SellToken attempts to sell a token with complete implementation
-func (t *Trader) SellToken(ctx context.Context, mint string, amountTokens uint64) (*TradeResult, error) {
+func (t *Trader) SellToken(ctx context.Context, mint common.PublicKey, amountTokens uint64) (*TradeResult, error) {
 	t.logger.WithFields(logrus.Fields{
 		"mint":          mint,
 		"amount_tokens": amountTokens,
@@ -197,14 +198,14 @@ func (t *Trader) SellToken(ctx context.Context, mint string, amountTokens uint64
 	}
 
 	// Get token info from registry
-	tokenInfo, exists := t.tokenRegistry[mint]
+	tokenInfo, exists := t.tokenRegistry[mint.String()]
 	if !exists {
 		result.Error = "token not found in registry - cannot sell tokens not purchased by this bot"
 		return result, fmt.Errorf(result.Error)
 	}
 
 	// Validate token balance
-	err := t.wallet.ValidateTokenAmount(ctx, mint, amountTokens)
+	err := t.wallet.ValidateTokenAmount(ctx, mint.String(), amountTokens)
 	if err != nil {
 		result.Error = fmt.Sprintf("insufficient token balance: %v", err)
 		return result, err
@@ -244,14 +245,14 @@ func (t *Trader) SellToken(ctx context.Context, mint string, amountTokens uint64
 
 	// Update token registry (reduce amount)
 	if tokenInfo.Amount <= amountTokens {
-		delete(t.tokenRegistry, mint)
+		delete(t.tokenRegistry, mint.String())
 	} else {
 		tokenInfo.Amount -= amountTokens
 	}
 
 	// Log successful trade
 	err = t.tradeLogger.LogSell(
-		mint, tokenInfo.Name, tokenInfo.Symbol,
+		mint.String(), tokenInfo.Name, tokenInfo.Symbol,
 		actualSOL, float64(amountTokens), actualPrice,
 		signature, "success", "", gasFee,
 		t.config.Trading.SlippageBP, t.config.Strategy.Type, profitLoss,
@@ -276,15 +277,15 @@ func (t *Trader) SellToken(ctx context.Context, mint string, amountTokens uint64
 
 // validateBuyRequest validates a buy request
 func (t *Trader) validateBuyRequest(event *TokenEvent) error {
-	if event.BondingCurve == "" {
+	if event.BondingCurve == nil {
 		return fmt.Errorf("bonding curve address is required")
 	}
 
-	if event.AssociatedBondingCurve == "" {
+	if event.AssociatedBondingCurve == nil {
 		return fmt.Errorf("associated bonding curve address is required")
 	}
 
-	if event.Mint == "" {
+	if event.Mint == nil {
 		return fmt.Errorf("mint address is required")
 	}
 
@@ -295,7 +296,7 @@ func (t *Trader) validateBuyRequest(event *TokenEvent) error {
 func (t *Trader) calculateTokensToReceive(ctx context.Context, event *TokenEvent, solAmount float64) (uint64, error) {
 	solLamports := utils.ConvertSOLToLamports(solAmount)
 
-	tokensToReceive, err := t.priceCalc.GetTokensForSOL(ctx, event.BondingCurve, solLamports)
+	tokensToReceive, err := t.priceCalc.GetTokensForSOL(ctx, *event.BondingCurve, solLamports)
 	if err != nil {
 		return 0, fmt.Errorf("failed to calculate tokens: %w", err)
 	}
@@ -431,23 +432,23 @@ func (t *Trader) createBuyInstruction(event *TokenEvent, amount, maxSolCost uint
 	instructionData := anchor.BuildBuyInstruction(amount, maxSolCost)
 
 	// Get ATA for user's tokens
-	userATA, err := t.wallet.GetAssociatedTokenAccount(event.Mint)
+	userATA, err := t.wallet.GetAssociatedTokenAccount(event.Mint.String())
 	if err != nil {
 		return wallet.CompiledInstruction{}, nil, fmt.Errorf("failed to get user ATA: %w", err)
 	}
 
 	// Decode required addresses
-	mintBytes, err := base58.Decode(event.Mint)
+	mintBytes, err := base58.Decode(event.Mint.String())
 	if err != nil {
 		return wallet.CompiledInstruction{}, nil, fmt.Errorf("failed to decode mint: %w", err)
 	}
 
-	bondingCurveBytes, err := base58.Decode(event.BondingCurve)
+	bondingCurveBytes, err := base58.Decode(event.BondingCurve.String())
 	if err != nil {
 		return wallet.CompiledInstruction{}, nil, fmt.Errorf("failed to decode bonding curve: %w", err)
 	}
 
-	associatedBondingCurveBytes, err := base58.Decode(event.AssociatedBondingCurve)
+	associatedBondingCurveBytes, err := base58.Decode(event.AssociatedBondingCurve.String())
 	if err != nil {
 		return wallet.CompiledInstruction{}, nil, fmt.Errorf("failed to decode associated bonding curve: %w", err)
 	}
@@ -484,23 +485,23 @@ func (t *Trader) createSellInstruction(tokenInfo *TokenInfo, amount, minSolOutpu
 	instructionData := anchor.BuildSellInstruction(amount, minSolOutput)
 
 	// Get ATA for user's tokens
-	userATA, err := t.wallet.GetAssociatedTokenAccount(tokenInfo.Mint)
+	userATA, err := t.wallet.GetAssociatedTokenAccount(tokenInfo.Mint.String())
 	if err != nil {
 		return wallet.CompiledInstruction{}, nil, fmt.Errorf("failed to get user ATA: %w", err)
 	}
 
 	// Decode required addresses
-	mintBytes, err := base58.Decode(tokenInfo.Mint)
+	mintBytes, err := base58.Decode(tokenInfo.Mint.String())
 	if err != nil {
 		return wallet.CompiledInstruction{}, nil, fmt.Errorf("failed to decode mint: %w", err)
 	}
 
-	bondingCurveBytes, err := base58.Decode(tokenInfo.BondingCurve)
+	bondingCurveBytes, err := base58.Decode(tokenInfo.BondingCurve.String())
 	if err != nil {
 		return wallet.CompiledInstruction{}, nil, fmt.Errorf("failed to decode bonding curve: %w", err)
 	}
 
-	associatedBondingCurveBytes, err := base58.Decode(tokenInfo.AssociatedBondingCurve)
+	associatedBondingCurveBytes, err := base58.Decode(tokenInfo.AssociatedBondingCurve.String())
 	if err != nil {
 		return wallet.CompiledInstruction{}, nil, fmt.Errorf("failed to decode associated bonding curve: %w", err)
 	}
@@ -659,11 +660,11 @@ func (t *Trader) CalculateOptimalBuyAmount(ctx context.Context, event *TokenEven
 // ShouldBuyToken determines if a token should be bought based on strategy and conditions
 func (t *Trader) ShouldBuyToken(ctx context.Context, event *TokenEvent) (bool, string) {
 	// Basic validation
-	if event.BondingCurve == "" {
+	if event.BondingCurve == nil {
 		return false, "no bonding curve address"
 	}
 
-	if event.AssociatedBondingCurve == "" {
+	if event.AssociatedBondingCurve == nil {
 		return false, "no associated bonding curve address"
 	}
 
@@ -702,13 +703,13 @@ func (t *Trader) ShouldBuyToken(ctx context.Context, event *TokenEvent) (bool, s
 
 // EstimateProfitLoss estimates potential profit/loss for a trade
 func (t *Trader) EstimateProfitLoss(ctx context.Context, event *TokenEvent, buyAmountSOL float64) (float64, error) {
-	if event.BondingCurve == "" {
+	if event.BondingCurve == nil {
 		return 0, fmt.Errorf("bonding curve address required")
 	}
 
 	// Calculate tokens we would receive
 	buyAmountLamports := utils.ConvertSOLToLamports(buyAmountSOL)
-	tokensToReceive, err := t.priceCalc.GetTokensForSOL(ctx, event.BondingCurve, buyAmountLamports)
+	tokensToReceive, err := t.priceCalc.GetTokensForSOL(ctx, *event.BondingCurve, buyAmountLamports)
 	if err != nil {
 		return 0, fmt.Errorf("failed to calculate tokens: %w", err)
 	}
@@ -718,7 +719,7 @@ func (t *Trader) EstimateProfitLoss(ctx context.Context, event *TokenEvent, buyA
 	}
 
 	// Get current bonding curve data
-	curveData, err := t.priceCalc.GetBondingCurveData(ctx, event.BondingCurve)
+	curveData, err := t.priceCalc.GetBondingCurveData(ctx, *event.BondingCurve)
 	if err != nil {
 		// Use default curve data if we can't fetch it
 		curveData = &BondingCurveData{

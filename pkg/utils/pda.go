@@ -12,22 +12,26 @@ func NewPumpFunPDADerivation() *PumpFunPDADerivation {
 	return &PumpFunPDADerivation{}
 }
 
-func (p *PumpFunPDADerivation) DeriveAssociatedBondingCurve(mint string, bondingCurve string) (common.PublicKey, uint8, error) {
+func (p *PumpFunPDADerivation) DeriveAssociatedBondingCurve(mint common.PublicKey, bondingCurve common.PublicKey) (*common.PublicKey, uint8, error) {
 	seeds := [][]byte{
-		common.PublicKeyFromString(bondingCurve).Bytes(),
+		bondingCurve.Bytes(),
 		common.TokenProgramID.Bytes(),
-		common.PublicKeyFromString(mint).Bytes(),
+		mint.Bytes(),
 	}
 
-	return common.FindProgramAddress(seeds, common.SPLAssociatedTokenAccountProgramID)
+	data, nonce, err := common.FindProgramAddress(seeds, common.SPLAssociatedTokenAccountProgramID)
+
+	return &data, nonce, err
 }
 
-func (p *PumpFunPDADerivation) DeriveCreatorVault(creator string) (common.PublicKey, uint8, error) {
+func (p *PumpFunPDADerivation) DeriveCreatorVault(creator common.PublicKey) (*common.PublicKey, uint8, error) {
 	seeds := [][]byte{
 		[]byte("creator-vault"),
 		common.TokenProgramID.Bytes(),
-		common.PublicKeyFromString(creator).Bytes(),
+		creator.Bytes(),
 	}
 
-	return common.FindProgramAddress(seeds, common.PublicKeyFromBytes(config.PumpFunProgramID))
+	data, nonce, err := common.FindProgramAddress(seeds, common.PublicKeyFromBytes(config.PumpFunProgramID))
+
+	return &data, nonce, err
 }

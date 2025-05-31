@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/blocto/solana-go-sdk/common"
 	"math"
 
 	"pump-fun-bot-go/internal/config"
@@ -33,7 +34,7 @@ func NewPriceCalculator(rpcClient *solana.Client) *PriceCalculator {
 }
 
 // GetTokenPrice calculates the current price of a token
-func (pc *PriceCalculator) GetTokenPrice(ctx context.Context, bondingCurveAddress string) (float64, error) {
+func (pc *PriceCalculator) GetTokenPrice(ctx context.Context, bondingCurveAddress common.PublicKey) (float64, error) {
 	curveData, err := pc.GetBondingCurveData(ctx, bondingCurveAddress)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get bonding curve data: %w", err)
@@ -43,7 +44,7 @@ func (pc *PriceCalculator) GetTokenPrice(ctx context.Context, bondingCurveAddres
 }
 
 // GetBuyPrice calculates the price for buying a specific amount of tokens
-func (pc *PriceCalculator) GetBuyPrice(ctx context.Context, bondingCurveAddress string, tokenAmount uint64) (uint64, error) {
+func (pc *PriceCalculator) GetBuyPrice(ctx context.Context, bondingCurveAddress common.PublicKey, tokenAmount uint64) (uint64, error) {
 	curveData, err := pc.GetBondingCurveData(ctx, bondingCurveAddress)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get bonding curve data: %w", err)
@@ -53,7 +54,7 @@ func (pc *PriceCalculator) GetBuyPrice(ctx context.Context, bondingCurveAddress 
 }
 
 // GetSellPrice calculates the price for selling a specific amount of tokens
-func (pc *PriceCalculator) GetSellPrice(ctx context.Context, bondingCurveAddress string, tokenAmount uint64) (uint64, error) {
+func (pc *PriceCalculator) GetSellPrice(ctx context.Context, bondingCurveAddress common.PublicKey, tokenAmount uint64) (uint64, error) {
 	curveData, err := pc.GetBondingCurveData(ctx, bondingCurveAddress)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get bonding curve data: %w", err)
@@ -63,7 +64,7 @@ func (pc *PriceCalculator) GetSellPrice(ctx context.Context, bondingCurveAddress
 }
 
 // GetTokensForSOL calculates how many tokens can be bought with a given amount of SOL
-func (pc *PriceCalculator) GetTokensForSOL(ctx context.Context, bondingCurveAddress string, solAmount uint64) (uint64, error) {
+func (pc *PriceCalculator) GetTokensForSOL(ctx context.Context, bondingCurveAddress common.PublicKey, solAmount uint64) (uint64, error) {
 	curveData, err := pc.GetBondingCurveData(ctx, bondingCurveAddress)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get bonding curve data: %w", err)
@@ -73,7 +74,7 @@ func (pc *PriceCalculator) GetTokensForSOL(ctx context.Context, bondingCurveAddr
 }
 
 // GetSOLForTokens calculates how much SOL will be received for selling tokens
-func (pc *PriceCalculator) GetSOLForTokens(ctx context.Context, bondingCurveAddress string, tokenAmount uint64) (uint64, error) {
+func (pc *PriceCalculator) GetSOLForTokens(ctx context.Context, bondingCurveAddress common.PublicKey, tokenAmount uint64) (uint64, error) {
 	curveData, err := pc.GetBondingCurveData(ctx, bondingCurveAddress)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get bonding curve data: %w", err)
@@ -83,8 +84,8 @@ func (pc *PriceCalculator) GetSOLForTokens(ctx context.Context, bondingCurveAddr
 }
 
 // GetBondingCurveData fetches and decodes bonding curve account data
-func (pc *PriceCalculator) GetBondingCurveData(ctx context.Context, bondingCurveAddress string) (*BondingCurveData, error) {
-	accountInfo, err := pc.rpcClient.GetAccountInfo(ctx, bondingCurveAddress)
+func (pc *PriceCalculator) GetBondingCurveData(ctx context.Context, bondingCurveAddress common.PublicKey) (*BondingCurveData, error) {
+	accountInfo, err := pc.rpcClient.GetAccountInfo(ctx, bondingCurveAddress.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get account info: %w", err)
 	}
