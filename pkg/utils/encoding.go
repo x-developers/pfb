@@ -1,11 +1,11 @@
 package utils
 
 import (
-	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/mr-tron/base58"
 )
@@ -77,98 +77,6 @@ func IsValidHex(s string) bool {
 
 // Solana-specific encoding utilities
 
-// PublicKey represents a Solana public key (32 bytes)
-type PublicKey [32]byte
-
-// PublicKeyFromBase58 creates PublicKey from base58 string
-func PublicKeyFromBase58(address string) (PublicKey, error) {
-	var pubkey PublicKey
-
-	decoded, err := base58.Decode(address)
-	if err != nil {
-		return pubkey, fmt.Errorf("invalid base58: %w", err)
-	}
-
-	if len(decoded) != 32 {
-		return pubkey, fmt.Errorf("invalid public key length: expected 32, got %d", len(decoded))
-	}
-
-	copy(pubkey[:], decoded)
-	return pubkey, nil
-}
-
-// String returns base58 representation of public key
-func (pk PublicKey) String() string {
-	return base58.Encode(pk[:])
-}
-
-// Bytes returns public key as byte slice
-func (pk PublicKey) Bytes() []byte {
-	return pk[:]
-}
-
-// IsZero checks if public key is zero
-func (pk PublicKey) IsZero() bool {
-	for _, b := range pk {
-		if b != 0 {
-			return false
-		}
-	}
-	return true
-}
-
-// Equals checks if two public keys are equal
-func (pk PublicKey) Equals(other PublicKey) bool {
-	for i := range pk {
-		if pk[i] != other[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// PrivateKey represents a Solana private key (64 bytes)
-type PrivateKey [64]byte
-
-// PrivateKeyFromBase58 creates PrivateKey from base58 string
-func PrivateKeyFromBase58(key string) (PrivateKey, error) {
-	var privkey PrivateKey
-
-	decoded, err := base58.Decode(key)
-	if err != nil {
-		return privkey, fmt.Errorf("invalid base58: %w", err)
-	}
-
-	if len(decoded) != 64 {
-		return privkey, fmt.Errorf("invalid private key length: expected 64, got %d", len(decoded))
-	}
-
-	copy(privkey[:], decoded)
-	return privkey, nil
-}
-
-// String returns base58 representation of private key
-func (pk PrivateKey) String() string {
-	return base58.Encode(pk[:])
-}
-
-// Bytes returns private key as byte slice
-func (pk PrivateKey) Bytes() []byte {
-	return pk[:]
-}
-
-// PublicKey returns the corresponding public key
-func (pk PrivateKey) PublicKey() PublicKey {
-	var pubkey PublicKey
-	copy(pubkey[:], pk[32:]) // Public key is second half of private key
-	return pubkey
-}
-
-// Sign signs data with private key
-func (pk PrivateKey) Sign(data []byte) []byte {
-	return ed25519.Sign(pk[:], data)
-}
-
 // Signature represents an Ed25519 signature (64 bytes)
 type Signature [64]byte
 
@@ -197,11 +105,6 @@ func (s Signature) String() string {
 // Bytes returns signature as byte slice
 func (s Signature) Bytes() []byte {
 	return s[:]
-}
-
-// Verify verifies signature against public key and data
-func (s Signature) Verify(pubkey PublicKey, data []byte) bool {
-	return ed25519.Verify(pubkey[:], data, s[:])
 }
 
 // Binary encoding utilities for instruction data
@@ -440,4 +343,19 @@ func SplitBytes(data []byte, positions ...int) [][]byte {
 
 	result[len(positions)] = data[start:]
 	return result
+}
+
+func DecodeDataString(dataStr string) ([]byte, error) {
+	dataStr = strings.TrimSpace(dataStr)
+
+	data, err := base64.StdEncoding.DecodeString(dataStr)
+	if err == nil {
+		return data, nil
+	}
+
+	data, err = hex.DecodeString(dataStr)
+	if err == nil {
+		return data, nil
+	}
+	return nil, fmt.Errorf("unknown encoding (not base64 or hex)")
 }

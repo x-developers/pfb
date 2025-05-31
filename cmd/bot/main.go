@@ -220,11 +220,13 @@ func (a *App) run() error {
 
 			a.tokensDiscovered++
 			a.logger.WithFields(map[string]interface{}{
-				"tokens_discovered": a.tokensDiscovered,
-				"mint":              tokenEvent.Mint,
-				"name":              tokenEvent.Name,
-				"symbol":            tokenEvent.Symbol,
-				"creator":           tokenEvent.Creator,
+				"tokens_discovered":        a.tokensDiscovered,
+				"mint":                     tokenEvent.Mint,
+				"bonding_curve":            tokenEvent.BondingCurve,
+				"associated_bonding_curve": tokenEvent.AssociatedBondingCurve,
+				"name":                     tokenEvent.Name,
+				"symbol":                   tokenEvent.Symbol,
+				"creator":                  tokenEvent.Creator,
 			}).Info("🎯 Processing discovered token")
 
 			// Process the token event

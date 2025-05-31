@@ -2,9 +2,7 @@ package pumpfun
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -12,6 +10,7 @@ import (
 	"pump-fun-bot-go/internal/config"
 	"pump-fun-bot-go/internal/logger"
 	"pump-fun-bot-go/internal/solana"
+	"pump-fun-bot-go/pkg/utils"
 
 	"github.com/mr-tron/base58"
 	"github.com/sirupsen/logrus"
@@ -28,6 +27,7 @@ type TokenEvent struct {
 	BondingCurve           string    `json:"bonding_curve"`
 	AssociatedBondingCurve string    `json:"associated_bonding_curve"`
 	Creator                string    `json:"creator"`
+	CreatorVault           string    `json:"creator_vault"`
 	User                   string    `json:"user"`
 	Name                   string    `json:"name"`
 	Symbol                 string    `json:"symbol"`
@@ -38,13 +38,14 @@ type TokenEvent struct {
 
 // Listener listens for new pump.fun tokens
 type Listener struct {
-	wsClient  *solana.WSClient
-	rpcClient *solana.Client
-	logger    *logger.Logger
-	config    *config.Config
-	tokenChan chan *TokenEvent
-	ctx       context.Context
-	cancel    context.CancelFunc
+	wsClient      *solana.WSClient
+	rpcClient     *solana.Client
+	logger        *logger.Logger
+	config        *config.Config
+	tokenChan     chan *TokenEvent
+	ctx           context.Context
+	cancel        context.CancelFunc
+	pdaDerivation *utils.PumpFunPDADerivation
 }
 
 // NewListener creates a new pump.fun listener
@@ -52,13 +53,14 @@ func NewListener(wsClient *solana.WSClient, rpcClient *solana.Client, logger *lo
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Listener{
-		wsClient:  wsClient,
-		rpcClient: rpcClient,
-		logger:    logger,
-		config:    cfg,
-		tokenChan: make(chan *TokenEvent, 100),
-		ctx:       ctx,
-		cancel:    cancel,
+		wsClient:      wsClient,
+		rpcClient:     rpcClient,
+		logger:        logger,
+		config:        cfg,
+		tokenChan:     make(chan *TokenEvent, 100),
+		ctx:           ctx,
+		cancel:        cancel,
+		pdaDerivation: utils.NewPumpFunPDADerivation(),
 	}
 }
 
@@ -187,7 +189,7 @@ func (l *Listener) extractTokenFromData(dataStr string, signature string, slot u
 		Timestamp: time.Now(),
 	}
 
-	data, err := decodeDataString(dataStr)
+	data, err := utils.DecodeDataString(dataStr)
 	if err != nil {
 		return nil, err
 	}
@@ -243,39 +245,17 @@ func (l *Listener) extractTokenFromData(dataStr string, signature string, slot u
 		return nil, err
 	}
 
+	derivedCreatorVault, _, err := l.pdaDerivation.DeriveCreatorVault(tokenEvent.Creator)
+	if err == nil {
+		tokenEvent.CreatorVault = derivedCreatorVault.String()
+	}
+
+	derivedAssociatedBondingCurve, _, err := l.pdaDerivation.DeriveAssociatedBondingCurve(tokenEvent.Mint, tokenEvent.BondingCurve)
+	if err == nil {
+		tokenEvent.AssociatedBondingCurve = derivedAssociatedBondingCurve.String()
+	} else {
+		l.logger.WithError(err).WithField("mint", tokenEvent.Mint).Warn("Failed to derive PDA addresses, using extracted values")
+	}
+
 	return tokenEvent, nil
-}
-
-// logTokenEvent logs a token event
-func (l *Listener) logTokenEvent(event *TokenEvent) {
-	l.logger.WithFields(logrus.Fields{
-		"event":                    "new_token_from_logs",
-		"mint":                     event.Mint,
-		"creator":                  event.Creator,
-		"name":                     event.Name,
-		"symbol":                   event.Symbol,
-		"signature":                event.Signature,
-		"slot":                     event.Slot,
-		"block_time":               event.BlockTime,
-		"bonding_curve":            event.BondingCurve,
-		"associated_bonding_curve": event.AssociatedBondingCurve,
-		"uri":                      event.URI,
-		"initial_price":            event.InitialPrice,
-		"timestamp":                event.Timestamp,
-	}).Info("New pump.fun token detected from program logs")
-}
-
-func decodeDataString(dataStr string) ([]byte, error) {
-	dataStr = strings.TrimSpace(dataStr)
-
-	data, err := base64.StdEncoding.DecodeString(dataStr)
-	if err == nil {
-		return data, nil
-	}
-
-	data, err = hex.DecodeString(dataStr)
-	if err == nil {
-		return data, nil
-	}
-	return nil, fmt.Errorf("unknown encoding (not base64 or hex)")
 }

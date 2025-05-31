@@ -3,12 +3,14 @@ package solana
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 
+	"github.com/mr-tron/base58"
 	"github.com/sirupsen/logrus"
 )
 
@@ -61,7 +63,21 @@ type AccountInfo struct {
 	Executable bool     `json:"executable"`
 	Lamports   uint64   `json:"lamports"`
 	Owner      string   `json:"owner"`
-	RentEpoch  uint64   `json:"rentEpoch"`
+	//RentEpoch  uint64   `json:"rentEpoch"`
+}
+
+func (ai *AccountInfo) GetOwnerKey() string {
+	base64Data := ai.Data[0]
+	decoded, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		panic(err)
+	}
+
+	owner := decoded[32:64]
+	ownerBase58 := base58.Encode(owner)
+	fmt.Println("Owner pubkey (base58):", ownerBase58)
+
+	return ownerBase58
 }
 
 // AccountInfoResponse represents the response for getAccountInfo
@@ -191,12 +207,13 @@ func (c *Client) GetAccountInfo(ctx context.Context, address string) (*AccountIn
 	}
 
 	var accountResponse AccountInfoResponse
-	if err := json.Unmarshal(resp.Result.([]byte), &accountResponse); err != nil {
-		// Try direct unmarshaling if it's already a map
-		resultBytes, _ := json.Marshal(resp.Result)
-		if err := json.Unmarshal(resultBytes, &accountResponse); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal account info: %w", err)
-		}
+	resultBytes, _ := json.Marshal(resp.Result)
+	if err := json.Unmarshal(resultBytes, &accountResponse); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal balance: %w", err)
+	}
+
+	if accountResponse.Value == nil {
+		return nil, fmt.Errorf("Empty accountResponse")
 	}
 
 	return accountResponse.Value, nil

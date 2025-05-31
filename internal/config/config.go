@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -110,6 +111,12 @@ func LoadConfig(configPath string) (*Config, error) {
 		// Config file not found, continue with defaults and env vars
 	}
 
+	// Process environment variable substitution in config values
+	err := processEnvSubstitution()
+	if err != nil {
+		return nil, fmt.Errorf("failed to process environment variables: %w", err)
+	}
+
 	// Unmarshal config
 	if err := viper.Unmarshal(config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
@@ -121,6 +128,70 @@ func LoadConfig(configPath string) (*Config, error) {
 	}
 
 	return config, nil
+}
+
+// processEnvSubstitution processes ${VAR:-default} substitution in config values
+func processEnvSubstitution() error {
+	// Get all configuration keys
+	allKeys := viper.AllKeys()
+
+	for _, key := range allKeys {
+		value := viper.GetString(key)
+
+		// Process environment variable substitution
+		processedValue := expandEnvVars(value)
+
+		// Set the processed value back
+		viper.Set(key, processedValue)
+	}
+
+	return nil
+}
+
+// expandEnvVars expands environment variables in the format ${VAR:-default}
+func expandEnvVars(value string) string {
+	if !strings.Contains(value, "${") {
+		return value
+	}
+
+	// Find all ${VAR:-default} patterns
+	result := value
+	for {
+		start := strings.Index(result, "${")
+		if start == -1 {
+			break
+		}
+
+		end := strings.Index(result[start:], "}")
+		if end == -1 {
+			break
+		}
+		end += start
+
+		// Extract the variable expression
+		expr := result[start+2 : end]
+
+		var varName, defaultValue string
+		if strings.Contains(expr, ":-") {
+			parts := strings.SplitN(expr, ":-", 2)
+			varName = parts[0]
+			defaultValue = parts[1]
+		} else {
+			varName = expr
+			defaultValue = ""
+		}
+
+		// Get environment variable value
+		envValue := os.Getenv(varName)
+		if envValue == "" {
+			envValue = defaultValue
+		}
+
+		// Replace the expression with the resolved value
+		result = result[:start] + envValue + result[end+1:]
+	}
+
+	return result
 }
 
 // setDefaults sets default configuration values
@@ -152,8 +223,8 @@ func setDefaults() {
 
 	// Logging defaults
 	viper.SetDefault("logging.level", "info")
-	viper.SetDefault("logging.format", "json")
-	viper.SetDefault("logging.log_to_file", true)
+	viper.SetDefault("logging.format", "text")
+	viper.SetDefault("logging.log_to_file", false)
 	viper.SetDefault("logging.log_file_path", "logs/bot.log")
 	viper.SetDefault("logging.trade_log_dir", "trades")
 
@@ -241,8 +312,8 @@ func GetConfigFromEnv() *Config {
 		},
 		Logging: LoggingConfig{
 			Level:       getEnvString("PUMPBOT_LOGGING_LEVEL", "info"),
-			Format:      getEnvString("PUMPBOT_LOGGING_FORMAT", "json"),
-			LogToFile:   getEnvBool("PUMPBOT_LOGGING_LOG_TO_FILE", true),
+			Format:      getEnvString("PUMPBOT_LOGGING_FORMAT", "text"),
+			LogToFile:   getEnvBool("PUMPBOT_LOGGING_LOG_TO_FILE", false),
 			LogFilePath: getEnvString("PUMPBOT_LOGGING_LOG_FILE_PATH", "logs/bot.log"),
 			TradeLogDir: getEnvString("PUMPBOT_LOGGING_TRADE_LOG_DIR", "trades"),
 		},
@@ -276,7 +347,7 @@ func getEnvString(key, defaultValue string) string {
 
 func getEnvInt(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
-		if intValue := parseInt(value); intValue != 0 {
+		if intValue, err := strconv.Atoi(value); err == nil {
 			return intValue
 		}
 	}
@@ -285,7 +356,7 @@ func getEnvInt(key string, defaultValue int) int {
 
 func getEnvFloat(key string, defaultValue float64) float64 {
 	if value := os.Getenv(key); value != "" {
-		if floatValue := parseFloat(value); floatValue != 0 {
+		if floatValue, err := strconv.ParseFloat(value, 64); err == nil {
 			return floatValue
 		}
 	}
@@ -297,15 +368,4 @@ func getEnvBool(key string, defaultValue bool) bool {
 		return strings.ToLower(value) == "true" || value == "1"
 	}
 	return defaultValue
-}
-
-// Simple parsing functions (for brevity - in production use strconv)
-func parseInt(s string) int {
-	// Implementation would use strconv.Atoi
-	return 0
-}
-
-func parseFloat(s string) float64 {
-	// Implementation would use strconv.ParseFloat
-	return 0.0
 }
