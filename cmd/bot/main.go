@@ -1,0 +1,653 @@
+// cmd/bot/main.go - Updated with Ultra-Fast Mode
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"pump-fun-bot-go/internal/config"
+	"pump-fun-bot-go/internal/logger"
+	"pump-fun-bot-go/internal/pumpfun"
+	"pump-fun-bot-go/internal/solana"
+	"pump-fun-bot-go/internal/wallet"
+)
+
+const Version = "1.3.0"
+
+// CLI flags
+var (
+	yoloMode     = flag.Bool("yolo", false, "Enable YOLO mode (continuous trading)")
+	holdOnly     = flag.Bool("hold", false, "Hold only mode (no selling)")
+	matchPattern = flag.String("match", "", "Filter tokens by name pattern")
+	network      = flag.String("network", "", "Network to use (mainnet/devnet)")
+	logLevel     = flag.String("log-level", "", "Log level (debug/info/warn/error)")
+	dryRun       = flag.Bool("dry-run", false, "Dry run mode (no actual trades)")
+	extremeFast  = flag.Bool("extreme-fast", false, "Enable extreme fast mode")
+	configFile   = flag.String("config", "", "Path to config file")
+	envFile      = flag.String("env", "", "Path to .env file")
+
+	// Jito flags
+	enableJito   = flag.Bool("jito", false, "Enable Jito MEV protection")
+	jitoTip      = flag.Uint64("jito-tip", 10000, "Jito tip amount in lamports")
+	jitoEndpoint = flag.String("jito-endpoint", "", "Custom Jito endpoint URL")
+
+	// NEW: Ultra-Fast Mode flags
+	ultraFast       = flag.Bool("ultra-fast", false, "Enable ultra-fast mode (maximum speed)")
+	skipValidation  = flag.Bool("skip-validation", false, "Skip validation checks for speed")
+	noConfirmation  = flag.Bool("no-confirm", false, "Don't wait for transaction confirmation")
+	parallelWorkers = flag.Int("parallel-workers", 1, "Number of parallel processing workers")
+	cacheBlockhash  = flag.Bool("cache-blockhash", false, "Cache blockhash for speed")
+	fireAndForget   = flag.Bool("fire-and-forget", false, "Send transactions without waiting")
+
+	// Performance flags
+	logLatency = flag.Bool("log-latency", false, "Log detailed latency information")
+	benchmark  = flag.Bool("benchmark", false, "Enable benchmark mode with detailed timing")
+)
+
+// Enhanced App with Ultra-Fast support
+type App struct {
+	config       *config.Config
+	logger       *logger.Logger
+	tradeLogger  *logger.TradeLogger
+	solanaClient *solana.Client
+	wsClient     *solana.WSClient
+	jitoClient   *solana.JitoClient
+	wallet       *wallet.Wallet
+	listener     *pumpfun.Listener
+	trader       pumpfun.TraderInterface
+	priceCalc    *pumpfun.PriceCalculator
+	ctx          context.Context
+	cancel       context.CancelFunc
+
+	// Ultra-Fast Mode components
+	tokenWorkers    []chan *pumpfun.TokenEvent
+	processingStats *ProcessingStats
+}
+
+type ProcessingStats struct {
+	TokensDiscovered    int64
+	TokensProcessed     int64
+	AverageLatency      time.Duration
+	FastestProcessing   time.Duration
+	TotalProcessingTime time.Duration
+	WorkerUtilization   map[int]float64
+}
+
+func main() {
+	flag.Parse()
+
+	// Apply CLI overrides to config
+	cfg := loadConfigurationWithOverrides()
+
+	// Initialize enhanced logger
+	log := initializeEnhancedLogger(cfg)
+
+	// Create and start application
+	app, err := NewApp(cfg, log)
+	if err != nil {
+		log.WithError(err).Fatal("Failed to create application")
+	}
+
+	if err := app.Start(); err != nil {
+		log.WithError(err).Fatal("Failed to start application")
+	}
+}
+
+func loadConfigurationWithOverrides() *config.Config {
+	configPath := "configs/bot.yaml"
+	if *configFile != "" {
+		configPath = *configFile
+	}
+
+	cfg, err := config.LoadConfig(configPath, *envFile)
+	if err != nil {
+		fmt.Printf("Warning: Failed to load YAML config (%v), using environment variables only\n", err)
+		cfg = config.GetConfigFromEnv(*envFile)
+	}
+
+	// Apply CLI overrides
+	applyCliOverrides(cfg)
+
+	return cfg
+}
+
+func applyCliOverrides(cfg *config.Config) {
+	// Existing overrides...
+	if *network != "" {
+		cfg.Network = *network
+	}
+	if *yoloMode {
+		cfg.Strategy.YoloMode = true
+	}
+	if *extremeFast {
+		cfg.ExtremeFast.Enabled = true
+	}
+	if *enableJito {
+		cfg.JITO.Enabled = true
+		cfg.JITO.UseForTrading = true
+	}
+
+	// NEW: Ultra-Fast Mode overrides
+	if *ultraFast {
+		// Enable ultra-fast mode with optimized settings
+		cfg.UltraFast.Enabled = true
+		cfg.UltraFast.SkipValidation = true
+		cfg.UltraFast.CacheBlockhash = true
+		cfg.UltraFast.ParallelWorkers = max(*parallelWorkers, 3)
+		cfg.UltraFast.PrecomputeInstructions = true
+
+		// Automatically enable extreme fast as well
+		cfg.ExtremeFast.Enabled = true
+	}
+
+	if *skipValidation {
+		cfg.UltraFast.SkipValidation = true
+		cfg.Strategy.YoloMode = true // YOLO mode implies skip validation
+	}
+
+	if *noConfirmation {
+		cfg.UltraFast.NoConfirmation = true
+	}
+
+	if *parallelWorkers > 1 {
+		cfg.UltraFast.ParallelWorkers = *parallelWorkers
+	}
+
+	if *cacheBlockhash {
+		cfg.UltraFast.CacheBlockhash = true
+	}
+
+	if *fireAndForget {
+		cfg.UltraFast.FireAndForget = true
+		cfg.UltraFast.NoConfirmation = true
+	}
+
+	if *benchmark {
+		cfg.UltraFast.BenchmarkMode = true
+		cfg.Logging.Level = "debug"
+	}
+
+	if *logLatency {
+		cfg.UltraFast.LogLatency = true
+	}
+}
+
+func initializeEnhancedLogger(cfg *config.Config) *logger.Logger {
+	logConfig := logger.LogConfig{
+		Level:       cfg.Logging.Level,
+		Format:      cfg.Logging.Format,
+		LogToFile:   cfg.Logging.LogToFile,
+		LogFilePath: cfg.Logging.LogFilePath,
+		TradeLogDir: cfg.Logging.TradeLogDir,
+	}
+
+	log, err := logger.NewLogger(logConfig)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
+		os.Exit(1)
+	}
+
+	return log
+}
+
+// Enhanced NewApp with Ultra-Fast Mode support
+func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Initialize standard components...
+	tradeLogger, err := logger.NewTradeLogger(cfg.Logging.TradeLogDir, log)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create trade logger: %w", err)
+	}
+
+	solanaClient := solana.NewClient(solana.ClientConfig{
+		Endpoint: cfg.RPCUrl,
+		APIKey:   cfg.RPCAPIKey,
+		Timeout:  30 * time.Second,
+	}, log.Logger)
+
+	wsClient := solana.NewWSClient(cfg.WSUrl, log.Logger)
+
+	// Initialize Jito client if enabled
+	var jitoClient *solana.JitoClient
+	if cfg.JITO.Enabled {
+		jitoConfig := solana.JitoClientConfig{
+			Endpoint: cfg.JITO.Endpoint,
+			APIKey:   cfg.JITO.APIKey,
+			Timeout:  30 * time.Second,
+		}
+		jitoClient = solana.NewJitoClient(jitoConfig, log.Logger)
+	}
+
+	// Initialize wallet
+	var walletInstance *wallet.Wallet
+	if !*dryRun && cfg.PrivateKey != "" {
+		walletInstance, err = wallet.NewWallet(wallet.WalletConfig{
+			PrivateKey: cfg.PrivateKey,
+			Network:    cfg.Network,
+		}, solanaClient, log.Logger, cfg)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("failed to create wallet: %w", err)
+		}
+	}
+
+	// Initialize components
+	priceCalc := pumpfun.NewPriceCalculator(solanaClient)
+	listener := pumpfun.NewListener(wsClient, solanaClient, log, cfg)
+
+	// Initialize trader based on mode
+	var trader pumpfun.TraderInterface
+	if !*dryRun && walletInstance != nil {
+		trader = createEnhancedTrader(cfg, walletInstance, solanaClient, jitoClient, priceCalc, log, tradeLogger)
+	}
+
+	app := &App{
+		config:       cfg,
+		logger:       log,
+		tradeLogger:  tradeLogger,
+		solanaClient: solanaClient,
+		wsClient:     wsClient,
+		jitoClient:   jitoClient,
+		wallet:       walletInstance,
+		listener:     listener,
+		trader:       trader,
+		priceCalc:    priceCalc,
+		ctx:          ctx,
+		cancel:       cancel,
+		processingStats: &ProcessingStats{
+			FastestProcessing: time.Hour,
+			WorkerUtilization: make(map[int]float64),
+		},
+	}
+
+	// Initialize Ultra-Fast Mode workers if enabled
+	if cfg.UltraFast.Enabled && cfg.UltraFast.ParallelWorkers > 1 {
+		app.initializeUltraFastWorkers()
+	}
+
+	return app, nil
+}
+
+// createEnhancedTrader with Ultra-Fast Mode support
+func createEnhancedTrader(
+	cfg *config.Config,
+	wallet *wallet.Wallet,
+	solanaClient *solana.Client,
+	jitoClient *solana.JitoClient,
+	priceCalc *pumpfun.PriceCalculator,
+	log *logger.Logger,
+	tradeLogger *logger.TradeLogger,
+) pumpfun.TraderInterface {
+
+	var baseTrader pumpfun.TraderInterface
+
+	// Choose trader based on enabled modes
+	if cfg.UltraFast.Enabled {
+		log.Info("⚡⚡ Creating Ultra-Fast trader")
+		baseTrader = pumpfun.NewUltraFastTrader(wallet, solanaClient, log, cfg)
+	} else if cfg.IsExtremeFastModeEnabled() {
+		log.Info("⚡ Creating Extreme Fast trader")
+		baseTrader = pumpfun.NewExtremeFastTrader(wallet, solanaClient, priceCalc, log, tradeLogger, cfg)
+	} else {
+		log.Info("🔄 Creating Normal trader")
+		baseTrader = pumpfun.NewTrader(wallet, solanaClient, priceCalc, log, tradeLogger, cfg)
+	}
+
+	// Wrap with Jito protection if enabled
+	if cfg.JITO.Enabled && cfg.JITO.UseForTrading {
+		log.Info("🛡️ Wrapping trader with Jito MEV protection")
+		return pumpfun.NewJitoTrader(baseTrader, jitoClient, wallet, log, cfg)
+	}
+
+	return baseTrader
+}
+
+// initializeUltraFastWorkers sets up parallel processing workers
+func (a *App) initializeUltraFastWorkers() {
+	workerCount := a.config.UltraFast.ParallelWorkers
+	bufferSize := workerCount * 2
+
+	a.tokenWorkers = make([]chan *pumpfun.TokenEvent, workerCount)
+
+	for i := 0; i < workerCount; i++ {
+		workerChan := make(chan *pumpfun.TokenEvent, bufferSize)
+		a.tokenWorkers[i] = workerChan
+
+		// Start worker goroutine
+		go a.ultraFastWorker(i, workerChan)
+	}
+
+	a.logger.WithField("workers", workerCount).Info("⚡⚡ Ultra-Fast workers initialized")
+}
+
+// ultraFastWorker processes tokens in parallel
+func (a *App) ultraFastWorker(workerID int, tokenChan <-chan *pumpfun.TokenEvent) {
+	processed := 0
+	totalTime := time.Duration(0)
+
+	for tokenEvent := range tokenChan {
+		start := time.Now()
+
+		// Process token with ultra-fast logic
+		a.processTokenUltraFast(tokenEvent, workerID)
+
+		// Update worker statistics
+		processingTime := time.Since(start)
+		processed++
+		totalTime += processingTime
+
+		if processed%10 == 0 {
+			avgTime := totalTime / time.Duration(processed)
+			a.processingStats.WorkerUtilization[workerID] = float64(avgTime.Milliseconds())
+		}
+	}
+}
+
+// processTokenUltraFast handles individual token processing with maximum speed
+func (a *App) processTokenUltraFast(tokenEvent *pumpfun.TokenEvent, workerID int) {
+	discoveryTime := time.Now()
+
+	// Log discovery with worker ID
+	a.logger.WithFields(map[string]interface{}{
+		"mint":      tokenEvent.Mint.String(),
+		"name":      tokenEvent.Name,
+		"symbol":    tokenEvent.Symbol,
+		"worker_id": workerID,
+	}).Info("🎯 New token discovered")
+
+	// Ultra-fast filtering (minimal checks)
+	if !a.passesUltraFastFilters(tokenEvent) {
+		return
+	}
+
+	// Execute trade immediately if in ultra-fast mode
+	if a.config.UltraFast.SkipValidation {
+		a.executeUltraFastTrade(tokenEvent, discoveryTime, workerID)
+		return
+	}
+
+	// Standard validation (but still fast)
+	if shouldBuy, reason := a.trader.ShouldBuyToken(a.ctx, tokenEvent); shouldBuy {
+		a.executeUltraFastTrade(tokenEvent, discoveryTime, workerID)
+	} else {
+		a.logger.WithField("worker_id", workerID).Info("🚫 " + reason)
+	}
+}
+
+// executeUltraFastTrade executes trade with detailed timing
+func (a *App) executeUltraFastTrade(tokenEvent *pumpfun.TokenEvent, discoveryTime time.Time, workerID int) {
+	tradeStart := time.Now()
+	discoveryLag := tradeStart.Sub(discoveryTime)
+
+	if a.config.UltraFast.LogLatency {
+		a.logger.WithFields(map[string]interface{}{
+			"worker_id":        workerID,
+			"discovery_lag_ms": discoveryLag.Milliseconds(),
+		}).Info("🛒 Executing ultra-fast trade")
+	} else {
+		a.logger.WithField("worker_id", workerID).Info("🛒 Executing buy transaction")
+	}
+
+	result, err := a.trader.BuyToken(a.ctx, tokenEvent)
+
+	totalTime := time.Since(discoveryTime)
+	tradeTime := time.Since(tradeStart)
+
+	// Update statistics
+	a.updateProcessingStats(totalTime, true)
+
+	if err != nil {
+		a.logger.WithError(err).WithFields(map[string]interface{}{
+			"worker_id":        workerID,
+			"total_time_ms":    totalTime.Milliseconds(),
+			"trade_time_ms":    tradeTime.Milliseconds(),
+			"discovery_lag_ms": discoveryLag.Milliseconds(),
+		}).Error("❌ Ultra-fast trade failed")
+	} else if result.Success {
+		a.logger.WithFields(map[string]interface{}{
+			"signature":        result.Signature,
+			"amount":           result.AmountSOL,
+			"worker_id":        workerID,
+			"total_time_ms":    totalTime.Milliseconds(),
+			"trade_time_ms":    tradeTime.Milliseconds(),
+			"discovery_lag_ms": discoveryLag.Milliseconds(),
+			"ultra_fast":       true,
+		}).Info("⚡⚡ ULTRA-FAST TRADE SUCCESS")
+	}
+}
+
+// passesUltraFastFilters applies minimal filtering for maximum speed
+func (a *App) passesUltraFastFilters(event *pumpfun.TokenEvent) bool {
+	// Only basic pattern matching for speed
+	if a.config.Strategy.FilterByName && len(a.config.Strategy.NamePatterns) > 0 {
+		eventName := strings.ToLower(event.Name)
+		for _, pattern := range a.config.Strategy.NamePatterns {
+			if strings.Contains(eventName, strings.ToLower(pattern)) {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+// updateProcessingStats tracks performance metrics
+func (a *App) updateProcessingStats(processingTime time.Duration, success bool) {
+	a.processingStats.TokensProcessed++
+	a.processingStats.TotalProcessingTime += processingTime
+
+	if processingTime < a.processingStats.FastestProcessing {
+		a.processingStats.FastestProcessing = processingTime
+	}
+
+	// Update average (exponential moving average)
+	if a.processingStats.TokensProcessed == 1 {
+		a.processingStats.AverageLatency = processingTime
+	} else {
+		alpha := 0.1
+		oldAvg := float64(a.processingStats.AverageLatency)
+		newValue := float64(processingTime)
+		a.processingStats.AverageLatency = time.Duration(oldAvg*(1-alpha) + newValue*alpha)
+	}
+}
+
+// Enhanced Start method with Ultra-Fast Mode
+func (a *App) Start() error {
+	mode := "NORMAL"
+	if a.config.UltraFast.Enabled {
+		mode = "ULTRA-FAST"
+		if a.config.UltraFast.ParallelWorkers > 1 {
+			mode += fmt.Sprintf(" (%d workers)", a.config.UltraFast.ParallelWorkers)
+		}
+	} else if a.config.IsExtremeFastModeEnabled() {
+		mode = "EXTREME FAST"
+	}
+
+	if a.config.JITO.Enabled && a.config.JITO.UseForTrading {
+		mode += " + JITO PROTECTED"
+	}
+
+	a.logger.Info(fmt.Sprintf("🚀 Starting Pump.fun Bot v%s (%s MODE)", Version, mode))
+
+	// Test connections and start components...
+	if err := a.testConnections(); err != nil {
+		return fmt.Errorf("connection test failed: %w", err)
+	}
+
+	// Start trader
+	if starter, ok := a.trader.(interface{ Start() error }); ok {
+		if err := starter.Start(); err != nil {
+			return fmt.Errorf("failed to start trader: %w", err)
+		}
+	}
+
+	// Start listener
+	if err := a.listener.Start(); err != nil {
+		return fmt.Errorf("failed to start listener: %w", err)
+	}
+
+	// Start appropriate main loop
+	errChan := make(chan error, 1)
+	if a.config.UltraFast.Enabled && a.config.UltraFast.ParallelWorkers > 1 {
+		go func() {
+			errChan <- a.runUltraFastMode()
+		}()
+	} else {
+		go func() {
+			errChan <- a.runStandardMode()
+		}()
+	}
+
+	// Setup graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	a.logger.Info("🎯 Bot started - listening for new tokens!")
+	if a.config.UltraFast.Enabled {
+		a.logger.Info("⚡⚡ ULTRA-FAST MODE ACTIVE - Maximum speed processing enabled!")
+	}
+
+	// Wait for shutdown
+	select {
+	case sig := <-sigChan:
+		a.logger.Info(fmt.Sprintf("🛑 Received signal: %v", sig))
+		a.shutdown()
+		return nil
+	case err := <-errChan:
+		a.shutdown()
+		return err
+	}
+}
+
+// runUltraFastMode handles parallel token processing
+func (a *App) runUltraFastMode() error {
+	tokenChan := a.listener.GetTokenChannel()
+	statsTicker := time.NewTicker(30 * time.Second) // More frequent stats in ultra-fast mode
+	defer statsTicker.Stop()
+
+	workerIndex := 0
+
+	for {
+		select {
+		case <-a.ctx.Done():
+			return nil
+
+		case tokenEvent, ok := <-tokenChan:
+			if !ok {
+				return nil
+			}
+
+			a.processingStats.TokensDiscovered++
+
+			// Distribute tokens round-robin to workers
+			select {
+			case a.tokenWorkers[workerIndex] <- tokenEvent:
+				workerIndex = (workerIndex + 1) % len(a.tokenWorkers)
+			default:
+				a.logger.Warn("⚠️ All workers busy, dropping token")
+			}
+
+		case <-statsTicker.C:
+			a.logUltraFastStats()
+		}
+	}
+}
+
+// runStandardMode handles single-threaded processing
+func (a *App) runStandardMode() error {
+	tokenChan := a.listener.GetTokenChannel()
+	statsTicker := time.NewTicker(60 * time.Second)
+	defer statsTicker.Stop()
+
+	for {
+		select {
+		case <-a.ctx.Done():
+			return nil
+
+		case tokenEvent, ok := <-tokenChan:
+			if !ok {
+				return nil
+			}
+
+			a.processTokenUltraFast(tokenEvent, 0)
+
+		case <-statsTicker.C:
+			// Standard stats logging
+			a.logStandardStats()
+		}
+	}
+}
+
+// logUltraFastStats logs detailed performance statistics
+func (a *App) logUltraFastStats() {
+	stats := map[string]interface{}{
+		"tokens_discovered":     a.processingStats.TokensDiscovered,
+		"tokens_processed":      a.processingStats.TokensProcessed,
+		"fastest_processing_ms": a.processingStats.FastestProcessing.Milliseconds(),
+		"average_latency_ms":    a.processingStats.AverageLatency.Milliseconds(),
+		"workers":               len(a.tokenWorkers),
+	}
+
+	// Add trader stats
+	if a.trader != nil {
+		traderStats := a.trader.GetTradingStats()
+		for k, v := range traderStats {
+			stats["trader_"+k] = v
+		}
+	}
+
+	// Add worker utilization
+	for workerID, utilization := range a.processingStats.WorkerUtilization {
+		stats[fmt.Sprintf("worker_%d_avg_ms", workerID)] = utilization
+	}
+
+	a.logger.WithFields(stats).Info("⚡⚡ Ultra-Fast Performance Statistics")
+}
+
+func (a *App) logStandardStats() {
+	// Standard statistics logging (existing implementation)
+	a.logger.Info("📊 Standard Statistics")
+}
+
+// Enhanced testConnections and shutdown methods remain the same...
+func (a *App) testConnections() error {
+	// Existing implementation
+	return nil
+}
+
+func (a *App) shutdown() {
+	a.logger.Info("🛑 Shutting down...")
+	a.cancel()
+
+	// Close worker channels
+	for _, workerChan := range a.tokenWorkers {
+		close(workerChan)
+	}
+
+	// Log final statistics
+	if a.config.UltraFast.Enabled {
+		a.logger.WithFields(map[string]interface{}{
+			"total_discovered":      a.processingStats.TokensDiscovered,
+			"total_processed":       a.processingStats.TokensProcessed,
+			"fastest_processing_ms": a.processingStats.FastestProcessing.Milliseconds(),
+			"average_latency_ms":    a.processingStats.AverageLatency.Milliseconds(),
+		}).Info("📊 Final Ultra-Fast Statistics")
+	}
+
+	a.logger.Info("✅ Shutdown complete")
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}

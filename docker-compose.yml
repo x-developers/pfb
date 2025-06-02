@@ -1,0 +1,115 @@
+version: '3.8'
+
+services:
+  pump-fun-bot:
+    build: .
+    container_name: pump-fun-bot
+    restart: unless-stopped
+    
+    environment:
+      # Required: Set your private key
+      - PUMPBOT_PRIVATE_KEY=${PUMPBOT_PRIVATE_KEY}
+
+      # Network configuration
+      - PUMPBOT_NETWORK=${PUMPBOT_NETWORK:-devnet}
+      - PUMPBOT_RPC_URL=${PUMPBOT_RPC_URL:-}
+      - PUMPBOT_RPC_API_KEY=${PUMPBOT_RPC_API_KEY:-}
+
+      # Trading configuration
+      - PUMPBOT_TRADING_BUY_AMOUNT_SOL=${PUMPBOT_TRADING_BUY_AMOUNT_SOL:-0.001}
+      - PUMPBOT_TRADING_SLIPPAGE_BP=${PUMPBOT_TRADING_SLIPPAGE_BP:-1000}
+      - PUMPBOT_TRADING_AUTO_SELL=${PUMPBOT_TRADING_AUTO_SELL:-false}
+
+      # Strategy configuration
+      - PUMPBOT_STRATEGY_TYPE=${PUMPBOT_STRATEGY_TYPE:-sniper}
+      - PUMPBOT_STRATEGY_YOLO_MODE=${PUMPBOT_STRATEGY_YOLO_MODE:-false}
+      - PUMPBOT_STRATEGY_HOLD_ONLY=${PUMPBOT_STRATEGY_HOLD_ONLY:-false}
+      - PUMPBOT_STRATEGY_MAX_TOKENS_PER_HOUR=${PUMPBOT_STRATEGY_MAX_TOKENS_PER_HOUR:-5}
+
+      # Logging configuration
+      - PUMPBOT_LOGGING_LEVEL=${PUMPBOT_LOGGING_LEVEL:-info}
+      - PUMPBOT_LOGGING_FORMAT=${PUMPBOT_LOGGING_FORMAT:-json}
+
+    volumes:
+      # Persist logs and trades
+      - ./logs:/app/logs
+      - ./trades:/app/trades
+
+      # Configuration override
+      - ./configs/bot.yaml:/app/configs/bot.yaml:ro
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+          cpus: '0.1'
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "pgrep", "pump-fun-bot"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: Monitoring with Prometheus (if metrics enabled)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: pump-fun-prometheus
+    restart: unless-stopped
+
+    ports:
+      - "9090:9090"
+
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+
+    profiles:
+      - monitoring
+
+  # Optional: Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: pump-fun-grafana
+    restart: unless-stopped
+
+    ports:
+      - "3000:3000"
+
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+
+    profiles:
+      - monitoring
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  default:
+    name: pump-fun-network

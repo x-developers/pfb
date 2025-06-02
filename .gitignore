@@ -1,0 +1,57 @@
+.env
+
+# Бинарники Go (основное)
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Каталоги и файлы, которые создаются при сборке
+/build/
+/bin/
+/dist/
+/coverage/
+
+# Временные и кэш-файлы Go
+*.coverprofile
+*.profile
+*.prof
+*.cov
+*.log
+
+# Кэш-модули Go
+**/vendor/
+
+# IDE и редакторы
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+*.bak
+
+# Системные файлы
+.DS_Store
+Thumbs.db
+
+# GoLand/IntelliJ
+*.iml
+*.ipr
+*.iws
+out/
+
+# Тестовые выходные файлы
+*.tmp
+*.temp
+
+# Настройки запуска Delve
+__debug_bin
+
+# Отчёты и артефакты CI
+*.lcov
+
+# Go modules
+go.sum
