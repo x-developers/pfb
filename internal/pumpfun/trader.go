@@ -30,6 +30,8 @@ type Trader struct {
 	successfulTrades int
 	lastTradeTime    time.Time
 	startTime        time.Time
+	rejectedByTiming int // NEW: количество токенов отклоненных по времени
+	staleTokens      int // NEW: количество устаревших токенов
 }
 
 // Ensure Trader implements TraderInterface
@@ -55,8 +57,54 @@ func NewTrader(
 	}
 }
 
-// ShouldBuyToken determines if we should buy a token (implements TraderInterface)
+// ShouldBuyToken determines if we should buy a token with timing validation
 func (t *Trader) ShouldBuyToken(ctx context.Context, tokenEvent *TokenEvent) (bool, string) {
+	// Log the timing analysis
+	age := tokenEvent.GetAge()
+	timeSinceDiscovery := time.Since(tokenEvent.DiscoveredAt)
+
+	t.logger.WithFields(map[string]interface{}{
+		"mint":                   tokenEvent.Mint.String(),
+		"discovered_at":          tokenEvent.DiscoveredAt.Format("15:04:05.000"),
+		"age_ms":                 age.Milliseconds(),
+		"time_since_discovery":   timeSinceDiscovery.Milliseconds(),
+		"processing_delay_ms":    tokenEvent.ProcessingDelayMs,
+		"max_age_ms":             t.config.Trading.MaxTokenAgeMs,
+		"min_discovery_delay_ms": t.config.Trading.MinDiscoveryDelayMs,
+	}).Debug("🕒 Timing analysis for token")
+
+	// NEW: Check if token is too old
+	if tokenEvent.IsStale(t.config) {
+		t.staleTokens++
+		reason := fmt.Sprintf("token too old: %dms (max: %dms)",
+			age.Milliseconds(), t.config.Trading.MaxTokenAgeMs)
+
+		t.logger.WithFields(map[string]interface{}{
+			"mint":   tokenEvent.Mint.String(),
+			"age_ms": age.Milliseconds(),
+			"max_ms": t.config.Trading.MaxTokenAgeMs,
+		}).Debug("⏰ Token rejected - too old")
+
+		return false, reason
+	}
+
+	// NEW: Check if we should wait for minimum discovery delay
+	//if tokenEvent.ShouldWaitForDelay(t.config) {
+	//	t.rejectedByTiming++
+	//	waitTime := t.config.GetMinDiscoveryDelay() - timeSinceDiscovery
+	//	reason := fmt.Sprintf("waiting for discovery delay: need %dms more",
+	//		waitTime.Milliseconds())
+	//
+	//	t.logger.WithFields(map[string]interface{}{
+	//		"mint":         tokenEvent.Mint.String(),
+	//		"elapsed_ms":   timeSinceDiscovery.Milliseconds(),
+	//		"required_ms":  t.config.Trading.MinDiscoveryDelayMs,
+	//		"wait_more_ms": waitTime.Milliseconds(),
+	//	}).Debug("⏱️ Token rejected - waiting for discovery delay")
+	//
+	//	return false, reason
+	//}
+
 	// Check wallet balance
 	balance, err := t.wallet.GetBalanceSOL(ctx)
 	if err != nil {
@@ -68,14 +116,6 @@ func (t *Trader) ShouldBuyToken(ctx context.Context, tokenEvent *TokenEvent) (bo
 		return false, fmt.Sprintf("insufficient balance: %.6f SOL (need %.6f)", balance, requiredAmount)
 	}
 
-	// Check bonding curve if possible
-	//if tokenEvent.BondingCurve != nil {
-	//	curveData, err := t.priceCalc.GetBondingCurveData(ctx, *tokenEvent.BondingCurve)
-	//	if err == nil && curveData.Complete {
-	//		return false, "bonding curve already complete"
-	//	}
-	//}
-
 	// Check if we're respecting the max tokens per hour limit
 	if t.config.Strategy.MaxTokensPerHour > 0 {
 		hourAgo := time.Now().Add(-time.Hour)
@@ -84,21 +124,40 @@ func (t *Trader) ShouldBuyToken(ctx context.Context, tokenEvent *TokenEvent) (bo
 		}
 	}
 
-	return true, "all conditions met"
+	// Log successful timing validation
+	t.logger.WithFields(map[string]interface{}{
+		"mint":                tokenEvent.Mint.String(),
+		"age_ms":              age.Milliseconds(),
+		"discovery_delay_ms":  timeSinceDiscovery.Milliseconds(),
+		"processing_delay_ms": tokenEvent.ProcessingDelayMs,
+	}).Debug("✅ Token passed timing validation")
+
+	return true, "all conditions met including timing"
 }
 
-// BuyToken executes a buy transaction (implements TraderInterface)
+// BuyToken executes a buy transaction with enhanced timing logging
 func (t *Trader) BuyToken(ctx context.Context, tokenEvent *TokenEvent) (*TradeResult, error) {
 	startTime := time.Now()
 	buyAmountSOL := t.config.Trading.BuyAmountSOL
 	buyAmountLamports := utils.ConvertSOLToLamports(buyAmountSOL)
 
+	// Calculate delays for enhanced logging
+	age := tokenEvent.GetAge()
+	discoveryDelay := time.Since(tokenEvent.DiscoveredAt)
+	totalDelay := time.Since(tokenEvent.Timestamp)
+
 	t.logger.WithFields(map[string]interface{}{
-		"mint":       tokenEvent.Mint.String(),
-		"name":       tokenEvent.Name,
-		"symbol":     tokenEvent.Symbol,
-		"amount_sol": buyAmountSOL,
-		"trader":     "normal",
+		"mint":                tokenEvent.Mint.String(),
+		"name":                tokenEvent.Name,
+		"symbol":              tokenEvent.Symbol,
+		"amount_sol":          buyAmountSOL,
+		"trader":              "normal",
+		"age_ms":              age.Milliseconds(),
+		"discovery_delay_ms":  discoveryDelay.Milliseconds(),
+		"total_delay_ms":      totalDelay.Milliseconds(),
+		"processing_delay_ms": tokenEvent.ProcessingDelayMs,
+		"execution_time":      startTime.Format("15:04:05.000"),
+		"discovered_at":       tokenEvent.DiscoveredAt.Format("15:04:05.000"),
 	}).Info("🛒 Executing buy transaction")
 
 	// Calculate expected tokens received (simplified calculation)
@@ -173,14 +232,19 @@ func (t *Trader) BuyToken(ctx context.Context, tokenEvent *TokenEvent) (*TradeRe
 	// Calculate price
 	price := float64(buyAmountLamports) / float64(tokensReceived)
 
-	// Log successful trade
+	// Enhanced success logging with all timing information
 	t.logger.WithFields(map[string]interface{}{
-		"signature":   signature,
-		"trade_time":  tradeTime.Milliseconds(),
-		"amount_sol":  buyAmountSOL,
-		"tokens":      tokensReceived,
-		"price":       price,
-		"trader_type": "normal",
+		"signature":           signature,
+		"trade_time":          tradeTime.Milliseconds(),
+		"amount_sol":          buyAmountSOL,
+		"tokens":              tokensReceived,
+		"price":               price,
+		"trader_type":         "normal",
+		"age_ms":              age.Milliseconds(),
+		"discovery_delay_ms":  discoveryDelay.Milliseconds(),
+		"total_delay_ms":      totalDelay.Milliseconds(),
+		"processing_delay_ms": tokenEvent.ProcessingDelayMs,
+		"execution_delay_ms":  tradeTime.Milliseconds(),
 	}).Info("✅ Buy transaction successful")
 
 	// Log trade to file
@@ -237,7 +301,7 @@ func (t *Trader) SellToken(ctx context.Context, mint common.PublicKey, amount ui
 	}, fmt.Errorf("sell functionality not yet implemented")
 }
 
-// GetTradingStats returns trading statistics (implements TraderInterface)
+// GetTradingStats returns enhanced trading statistics with timing info
 func (t *Trader) GetTradingStats() map[string]interface{} {
 	successRate := float64(0)
 	if t.totalTrades > 0 {
@@ -251,16 +315,20 @@ func (t *Trader) GetTradingStats() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"trader_active":     true,
-		"mode":              "normal",
-		"trader_type":       t.GetTraderType(),
-		"total_trades":      t.totalTrades,
-		"successful_trades": t.successfulTrades,
-		"success_rate":      fmt.Sprintf("%.1f%%", successRate),
-		"uptime_seconds":    uptime.Seconds(),
-		"last_trade_ago":    lastTradeAgo,
-		"buy_amount_sol":    t.config.Trading.BuyAmountSOL,
-		"slippage_bp":       t.config.Trading.SlippageBP,
+		"trader_active":          true,
+		"mode":                   "normal",
+		"trader_type":            t.GetTraderType(),
+		"total_trades":           t.totalTrades,
+		"successful_trades":      t.successfulTrades,
+		"success_rate":           fmt.Sprintf("%.1f%%", successRate),
+		"uptime_seconds":         uptime.Seconds(),
+		"last_trade_ago":         lastTradeAgo,
+		"buy_amount_sol":         t.config.Trading.BuyAmountSOL,
+		"slippage_bp":            t.config.Trading.SlippageBP,
+		"rejected_by_timing":     t.rejectedByTiming,
+		"stale_tokens":           t.staleTokens,
+		"max_token_age_ms":       t.config.Trading.MaxTokenAgeMs,
+		"min_discovery_delay_ms": t.config.Trading.MinDiscoveryDelayMs,
 	}
 }
 
@@ -273,9 +341,11 @@ func (t *Trader) GetTraderType() string {
 func (t *Trader) Stop() {
 	uptime := time.Since(t.startTime)
 	t.logger.WithFields(map[string]interface{}{
-		"total_trades":      t.totalTrades,
-		"successful_trades": t.successfulTrades,
-		"uptime":            uptime.String(),
+		"total_trades":       t.totalTrades,
+		"successful_trades":  t.successfulTrades,
+		"rejected_by_timing": t.rejectedByTiming,
+		"stale_tokens":       t.staleTokens,
+		"uptime":             uptime.String(),
 	}).Info("🛑 Normal trader stopped")
 }
 
@@ -327,13 +397,6 @@ func (t *Trader) createATAInstructionIfNeeded(ctx context.Context, mint common.P
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive ATA: %w", err)
 	}
-
-	// Check if ATA already exists
-	//accountInfo, err := t.rpcClient.GetAccountInfo(ctx, ata.String())
-	//if err == nil && accountInfo != nil {
-	//	// ATA exists, no need to create
-	//	return nil, nil
-	//}
 
 	// Create ATA instruction
 	instruction := types.Instruction{
@@ -435,16 +498,22 @@ func (t *Trader) ValidateTokenEvent(tokenEvent *TokenEvent) error {
 	return nil
 }
 
-// LogTradeAttempt logs when a trade attempt is made
+// LogTradeAttempt logs when a trade attempt is made with timing information
 func (t *Trader) LogTradeAttempt(tokenEvent *TokenEvent, tradeType string) {
+	age := tokenEvent.GetAge()
+	discoveryDelay := time.Since(tokenEvent.DiscoveredAt)
+
 	t.logger.WithFields(map[string]interface{}{
-		"event":     "trade_attempt",
-		"type":      tradeType,
-		"mint":      tokenEvent.Mint.String(),
-		"name":      tokenEvent.Name,
-		"symbol":    tokenEvent.Symbol,
-		"creator":   tokenEvent.Creator.String(),
-		"trader":    "normal",
-		"timestamp": time.Now().Format(time.RFC3339),
+		"event":               "trade_attempt",
+		"type":                tradeType,
+		"mint":                tokenEvent.Mint.String(),
+		"name":                tokenEvent.Name,
+		"symbol":              tokenEvent.Symbol,
+		"creator":             tokenEvent.Creator.String(),
+		"trader":              "normal",
+		"age_ms":              age.Milliseconds(),
+		"discovery_delay_ms":  discoveryDelay.Milliseconds(),
+		"processing_delay_ms": tokenEvent.ProcessingDelayMs,
+		"timestamp":           time.Now().Format(time.RFC3339),
 	}).Info("💰 Trade attempt initiated")
 }

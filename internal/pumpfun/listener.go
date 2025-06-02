@@ -19,7 +19,7 @@ import (
 
 const CREATE_DISCRIMINATOR uint64 = 8530921459188068891
 
-// TokenEvent represents a new token creation event
+// TokenEvent represents a new token creation event with timing information
 type TokenEvent struct {
 	Signature              string            `json:"signature"`
 	Slot                   uint64            `json:"slot"`
@@ -34,7 +34,35 @@ type TokenEvent struct {
 	Symbol                 string            `json:"symbol"`
 	URI                    string            `json:"uri"`
 	InitialPrice           float64           `json:"initial_price"`
-	Timestamp              time.Time         `json:"timestamp"`
+	Timestamp              time.Time         `json:"timestamp"`           // NEW: Время обнаружения токена
+	DiscoveredAt           time.Time         `json:"discovered_at"`       // NEW: Время когда токен был обработан
+	ProcessingDelayMs      int64             `json:"processing_delay_ms"` // NEW: Задержка обработки в мс
+}
+
+// GetAge returns the age of the token since discovery
+func (te *TokenEvent) GetAge() time.Duration {
+	return time.Since(te.DiscoveredAt)
+}
+
+// GetTimeSinceBlockTime returns time since block time
+func (te *TokenEvent) GetTimeSinceBlockTime() time.Duration {
+	if te.BlockTime == 0 {
+		return time.Duration(0)
+	}
+	blockTimeStamp := time.Unix(te.BlockTime, 0)
+	return time.Since(blockTimeStamp)
+}
+
+// IsStale checks if token is too old based on configuration
+func (te *TokenEvent) IsStale(cfg *config.Config) bool {
+	age := te.GetAge()
+	return !cfg.IsTokenAgeValid(age)
+}
+
+// ShouldWaitForDelay checks if we should wait more before trading
+func (te *TokenEvent) ShouldWaitForDelay(cfg *config.Config) bool {
+	timeSinceDiscovery := time.Since(te.DiscoveredAt)
+	return !cfg.IsDiscoveryDelayValid(timeSinceDiscovery)
 }
 
 // Listener listens for new pump.fun tokens
@@ -47,6 +75,13 @@ type Listener struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
 	pdaDerivation *utils.PumpFunPDADerivation
+
+	// Statistics for monitoring
+	tokensDiscovered    int64
+	tokensProcessed     int64
+	averageProcessingMs float64
+	fastestProcessingMs int64
+	slowestProcessingMs int64
 }
 
 // NewListener creates a new pump.fun listener
@@ -54,14 +89,15 @@ func NewListener(wsClient *solana.WSClient, rpcClient *solana.Client, logger *lo
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Listener{
-		wsClient:      wsClient,
-		rpcClient:     rpcClient,
-		logger:        logger,
-		config:        cfg,
-		tokenChan:     make(chan *TokenEvent, 100),
-		ctx:           ctx,
-		cancel:        cancel,
-		pdaDerivation: utils.NewPumpFunPDADerivation(),
+		wsClient:            wsClient,
+		rpcClient:           rpcClient,
+		logger:              logger,
+		config:              cfg,
+		tokenChan:           make(chan *TokenEvent, 100),
+		ctx:                 ctx,
+		cancel:              cancel,
+		pdaDerivation:       utils.NewPumpFunPDADerivation(),
+		fastestProcessingMs: 999999,
 	}
 }
 
@@ -97,8 +133,21 @@ func (l *Listener) GetTokenChannel() <-chan *TokenEvent {
 	return l.tokenChan
 }
 
-// handleLogsNotification handles logs notifications from WebSocket with enhanced processing
+// GetStats returns listener statistics
+func (l *Listener) GetStats() map[string]interface{} {
+	return map[string]interface{}{
+		"tokens_discovered":     l.tokensDiscovered,
+		"tokens_processed":      l.tokensProcessed,
+		"average_processing_ms": l.averageProcessingMs,
+		"fastest_processing_ms": l.fastestProcessingMs,
+		"slowest_processing_ms": l.slowestProcessingMs,
+	}
+}
+
+// handleLogsNotification handles logs notifications from WebSocket with enhanced processing and timing
 func (l *Listener) handleLogsNotification(data interface{}) error {
+	processingStart := time.Now() // Start timing immediately
+
 	notification, ok := data.(solana.LogsNotification)
 	if !ok {
 		return fmt.Errorf("invalid logs notification format")
@@ -118,10 +167,11 @@ func (l *Listener) handleLogsNotification(data interface{}) error {
 		"signature":  signature,
 		"slot":       slot,
 		"logs_count": len(logs),
-	}).Debug("Processing logs notification")
+		"timestamp":  processingStart.Format("15:04:05.000"),
+	}).Debug("🔍 Processing logs notification")
 
 	// Process program logs to extract token information
-	tokenInfo, err := l.processProgramLogs(logs, signature, slot)
+	tokenInfo, err := l.processProgramLogs(logs, signature, slot, processingStart)
 	if err != nil {
 		l.logger.WithError(err).WithField("signature", signature).Debug("Failed to process program logs")
 		return nil
@@ -132,21 +182,70 @@ func (l *Listener) handleLogsNotification(data interface{}) error {
 		return nil
 	}
 
+	// Calculate processing time
+	processingTime := time.Since(processingStart)
+	processingMs := processingTime.Milliseconds()
+	tokenInfo.ProcessingDelayMs = processingMs
+
+	// Update statistics
+	l.updateProcessingStats(processingMs)
+
+	// Enhanced logging with timing information
+	l.logger.WithFields(logrus.Fields{
+		"mint":          tokenInfo.Mint.String(),
+		"name":          tokenInfo.Name,
+		"symbol":        tokenInfo.Symbol,
+		"creator":       tokenInfo.Creator.String(),
+		"processing_ms": processingMs,
+		"discovered_at": tokenInfo.DiscoveredAt.Format("15:04:05.000"),
+		"timestamp":     tokenInfo.Timestamp.Format("15:04:05.000"),
+	}).Info("🔍 New token discovered")
+
 	// Send token event to channel
 	select {
 	case l.tokenChan <- tokenInfo:
-		l.logger.LogTokenDiscovered(tokenInfo.Mint.String(), tokenInfo.Creator.String(), tokenInfo.Name, tokenInfo.Symbol)
+		l.tokensProcessed++
+		l.logger.WithFields(logrus.Fields{
+			"mint":        tokenInfo.Mint.String(),
+			"channel_lag": time.Since(tokenInfo.DiscoveredAt).Milliseconds(),
+		}).Debug("✅ Token sent to processing channel")
 	case <-l.ctx.Done():
 		return nil
 	default:
-		l.logger.Warn("Token channel full, dropping event")
+		l.logger.WithFields(logrus.Fields{
+			"mint":   tokenInfo.Mint.String(),
+			"age_ms": time.Since(tokenInfo.DiscoveredAt).Milliseconds(),
+		}).Warn("⚠️ Token channel full, dropping event")
 	}
 
 	return nil
 }
 
-// processProgramLogs processes program logs to extract token creation information
-func (l *Listener) processProgramLogs(logs []string, signature string, slot uint64) (*TokenEvent, error) {
+// updateProcessingStats updates processing statistics
+func (l *Listener) updateProcessingStats(processingMs int64) {
+	l.tokensDiscovered++
+
+	// Update fastest processing time
+	if processingMs < l.fastestProcessingMs {
+		l.fastestProcessingMs = processingMs
+	}
+
+	// Update slowest processing time
+	if processingMs > l.slowestProcessingMs {
+		l.slowestProcessingMs = processingMs
+	}
+
+	// Update average processing time (exponential moving average)
+	if l.tokensDiscovered == 1 {
+		l.averageProcessingMs = float64(processingMs)
+	} else {
+		alpha := 0.1 // Smoothing factor
+		l.averageProcessingMs = l.averageProcessingMs*(1-alpha) + float64(processingMs)*alpha
+	}
+}
+
+// processProgramLogs processes program logs to extract token creation information with timing
+func (l *Listener) processProgramLogs(logs []string, signature string, slot uint64, discoveryTime time.Time) (*TokenEvent, error) {
 	var processLogs bool
 
 	// Check if this is a token creation
@@ -173,7 +272,7 @@ func (l *Listener) processProgramLogs(logs []string, signature string, slot uint
 		// Check for pump.fun program log patterns
 		if strings.Contains(log, "Program data: ") {
 			logContent := strings.TrimPrefix(log, "Program data: ")
-			tokenEvent, err := l.extractTokenFromData(logContent, signature, slot)
+			tokenEvent, err := l.extractTokenFromData(logContent, signature, slot, discoveryTime)
 			if err == nil {
 				return tokenEvent, err
 			}
@@ -183,11 +282,14 @@ func (l *Listener) processProgramLogs(logs []string, signature string, slot uint
 	return nil, nil
 }
 
-func (l *Listener) extractTokenFromData(dataStr string, signature string, slot uint64) (*TokenEvent, error) {
+// extractTokenFromData extracts token information from program data with timing
+func (l *Listener) extractTokenFromData(dataStr string, signature string, slot uint64, discoveryTime time.Time) (*TokenEvent, error) {
+	now := time.Now()
 	tokenEvent := &TokenEvent{
-		Signature: signature,
-		Slot:      slot,
-		Timestamp: time.Now(),
+		Signature:    signature,
+		Slot:         slot,
+		Timestamp:    now,           // Current timestamp
+		DiscoveredAt: discoveryTime, // When we started processing this event
 	}
 
 	data, err := utils.DecodeDataString(dataStr)

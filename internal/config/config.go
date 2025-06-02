@@ -41,21 +41,23 @@ type Config struct {
 	// Extreme Fast Mode settings
 	ExtremeFast ExtremeFastConfig `mapstructure:"extreme_fast" yaml:"extreme_fast"`
 
-	// Ultra Fast Mode settings - NEW
+	// Ultra Fast Mode settings
 	UltraFast UltraFastConfig `mapstructure:"ultra_fast" yaml:"ultra_fast"`
 }
 
 // TradingConfig contains trading-related settings
 type TradingConfig struct {
-	BuyAmountSOL      float64 `mapstructure:"buy_amount_sol" yaml:"buy_amount_sol"`
-	SlippageBP        int     `mapstructure:"slippage_bp" yaml:"slippage_bp"`
-	MaxGasPrice       uint64  `mapstructure:"max_gas_price" yaml:"max_gas_price"`
-	PriorityFee       uint64  `mapstructure:"priority_fee" yaml:"priority_fee"`
-	AutoSell          bool    `mapstructure:"auto_sell" yaml:"auto_sell"`
-	SellDelaySeconds  int     `mapstructure:"sell_delay_seconds" yaml:"sell_delay_seconds"`
-	SellPercentage    float64 `mapstructure:"sell_percentage" yaml:"sell_percentage"`
-	TakeProfitPercent float64 `mapstructure:"take_profit_percent" yaml:"take_profit_percent"`
-	StopLossPercent   float64 `mapstructure:"stop_loss_percent" yaml:"stop_loss_percent"`
+	BuyAmountSOL        float64 `mapstructure:"buy_amount_sol" yaml:"buy_amount_sol"`
+	SlippageBP          int     `mapstructure:"slippage_bp" yaml:"slippage_bp"`
+	MaxGasPrice         uint64  `mapstructure:"max_gas_price" yaml:"max_gas_price"`
+	PriorityFee         uint64  `mapstructure:"priority_fee" yaml:"priority_fee"`
+	AutoSell            bool    `mapstructure:"auto_sell" yaml:"auto_sell"`
+	SellDelaySeconds    int     `mapstructure:"sell_delay_seconds" yaml:"sell_delay_seconds"`
+	SellPercentage      float64 `mapstructure:"sell_percentage" yaml:"sell_percentage"`
+	TakeProfitPercent   float64 `mapstructure:"take_profit_percent" yaml:"take_profit_percent"`
+	StopLossPercent     float64 `mapstructure:"stop_loss_percent" yaml:"stop_loss_percent"`
+	MaxTokenAgeMs       int64   `mapstructure:"max_token_age_ms" yaml:"max_token_age_ms"`             // NEW: максимальный возраст токена в мс
+	MinDiscoveryDelayMs int64   `mapstructure:"min_discovery_delay_ms" yaml:"min_discovery_delay_ms"` // NEW: минимальная задержка после обнаружения
 }
 
 // JitoConfig contains JITO-related settings
@@ -340,6 +342,8 @@ func bindEnvVariables() {
 	viper.BindEnv("trading.priority_fee", "PUMPBOT_TRADING_PRIORITY_FEE")
 	viper.BindEnv("trading.auto_sell", "PUMPBOT_TRADING_AUTO_SELL")
 	viper.BindEnv("trading.sell_delay_seconds", "PUMPBOT_TRADING_SELL_DELAY_SECONDS")
+	viper.BindEnv("trading.max_token_age_ms", "PUMPBOT_TRADING_MAX_TOKEN_AGE_MS")
+	viper.BindEnv("trading.min_discovery_delay_ms", "PUMPBOT_TRADING_MIN_DISCOVERY_DELAY_MS")
 
 	// Strategy variables
 	viper.BindEnv("strategy.type", "PUMPBOT_STRATEGY_TYPE")
@@ -406,6 +410,18 @@ func overrideWithEnvVars() {
 		if val, err := strconv.Atoi(envVal); err == nil {
 			viper.Set("trading.slippage_bp", val)
 			fmt.Printf("ENV Override - Slippage: %d BP\n", val)
+		}
+	}
+	if envVal := os.Getenv("PUMPBOT_TRADING_MAX_TOKEN_AGE_MS"); envVal != "" {
+		if val, err := strconv.ParseInt(envVal, 10, 64); err == nil {
+			viper.Set("trading.max_token_age_ms", val)
+			fmt.Printf("ENV Override - Max Token Age: %d ms\n", val)
+		}
+	}
+	if envVal := os.Getenv("PUMPBOT_TRADING_MIN_DISCOVERY_DELAY_MS"); envVal != "" {
+		if val, err := strconv.ParseInt(envVal, 10, 64); err == nil {
+			viper.Set("trading.min_discovery_delay_ms", val)
+			fmt.Printf("ENV Override - Min Discovery Delay: %d ms\n", val)
 		}
 	}
 
@@ -538,7 +554,6 @@ func setDefaults() {
 	viper.SetDefault("rpc_url", "")
 	viper.SetDefault("ws_url", "")
 
-	// Trading defaults
 	viper.SetDefault("trading.buy_amount_sol", DefaultBuyAmountSOL)
 	viper.SetDefault("trading.slippage_bp", DefaultSlippageBP)
 	viper.SetDefault("trading.max_gas_price", 0)
@@ -548,6 +563,8 @@ func setDefaults() {
 	viper.SetDefault("trading.sell_percentage", 100.0)
 	viper.SetDefault("trading.take_profit_percent", 50.0)
 	viper.SetDefault("trading.stop_loss_percent", -20.0)
+	viper.SetDefault("trading.max_token_age_ms", 5000)      // NEW: 5 seconds max age
+	viper.SetDefault("trading.min_discovery_delay_ms", 100) // NEW: 100ms minimum delay
 
 	// Strategy defaults
 	viper.SetDefault("strategy.type", "sniper")
@@ -627,6 +644,18 @@ func validateConfig(config *Config) error {
 		return fmt.Errorf("strategy.type must be 'sniper' or 'holder'")
 	}
 
+	// Validate timing settings
+	if config.Trading.MaxTokenAgeMs < 0 {
+		return fmt.Errorf("max_token_age_ms must be non-negative")
+	}
+	if config.Trading.MinDiscoveryDelayMs < 0 {
+		return fmt.Errorf("min_discovery_delay_ms must be non-negative")
+	}
+	if config.Trading.MaxTokenAgeMs > 0 && config.Trading.MinDiscoveryDelayMs > config.Trading.MaxTokenAgeMs {
+		return fmt.Errorf("min_discovery_delay_ms (%d) cannot be greater than max_token_age_ms (%d)",
+			config.Trading.MinDiscoveryDelayMs, config.Trading.MaxTokenAgeMs)
+	}
+
 	// Validate extreme fast mode settings
 	if config.ExtremeFast.Enabled {
 		if config.ExtremeFast.MaxPrecomputedTx < 1 || config.ExtremeFast.MaxPrecomputedTx > 200 {
@@ -674,15 +703,17 @@ func GetConfigFromEnv(envPath string) *Config {
 		RPCAPIKey:  getEnvString("PUMPBOT_RPC_API_KEY", ""),
 		PrivateKey: getEnvString("PUMPBOT_PRIVATE_KEY", ""),
 		Trading: TradingConfig{
-			BuyAmountSOL:      getEnvFloat("PUMPBOT_TRADING_BUY_AMOUNT_SOL", DefaultBuyAmountSOL),
-			SlippageBP:        getEnvInt("PUMPBOT_TRADING_SLIPPAGE_BP", DefaultSlippageBP),
-			AutoSell:          getEnvBool("PUMPBOT_TRADING_AUTO_SELL", false),
-			SellDelaySeconds:  getEnvInt("PUMPBOT_TRADING_SELL_DELAY_SECONDS", 30),
-			SellPercentage:    getEnvFloat("PUMPBOT_TRADING_SELL_PERCENTAGE", 100.0),
-			TakeProfitPercent: getEnvFloat("PUMPBOT_TRADING_TAKE_PROFIT_PERCENT", 50.0),
-			StopLossPercent:   getEnvFloat("PUMPBOT_TRADING_STOP_LOSS_PERCENT", -20.0),
-			PriorityFee:       uint64(getEnvInt("PUMPBOT_TRADING_PRIORITY_FEE", 0)),
-			MaxGasPrice:       uint64(getEnvInt("PUMPBOT_TRADING_MAX_GAS_PRICE", 0)),
+			BuyAmountSOL:        getEnvFloat("PUMPBOT_TRADING_BUY_AMOUNT_SOL", DefaultBuyAmountSOL),
+			SlippageBP:          getEnvInt("PUMPBOT_TRADING_SLIPPAGE_BP", DefaultSlippageBP),
+			AutoSell:            getEnvBool("PUMPBOT_TRADING_AUTO_SELL", false),
+			SellDelaySeconds:    getEnvInt("PUMPBOT_TRADING_SELL_DELAY_SECONDS", 30),
+			SellPercentage:      getEnvFloat("PUMPBOT_TRADING_SELL_PERCENTAGE", 100.0),
+			TakeProfitPercent:   getEnvFloat("PUMPBOT_TRADING_TAKE_PROFIT_PERCENT", 50.0),
+			StopLossPercent:     getEnvFloat("PUMPBOT_TRADING_STOP_LOSS_PERCENT", -20.0),
+			PriorityFee:         uint64(getEnvInt("PUMPBOT_TRADING_PRIORITY_FEE", 0)),
+			MaxGasPrice:         uint64(getEnvInt("PUMPBOT_TRADING_MAX_GAS_PRICE", 0)),
+			MaxTokenAgeMs:       getEnvInt64("PUMPBOT_TRADING_MAX_TOKEN_AGE_MS", 5000),
+			MinDiscoveryDelayMs: getEnvInt64("PUMPBOT_TRADING_MIN_DISCOVERY_DELAY_MS", 100),
 		},
 		Strategy: StrategyConfig{
 			Type:             getEnvString("PUMPBOT_STRATEGY_TYPE", "sniper"),
@@ -810,6 +841,37 @@ func (c *Config) GetEffectiveRPCTimeout() time.Duration {
 	return 5000 * time.Millisecond // Default 5 seconds
 }
 
+// NEW: Token timing validation methods
+func (c *Config) GetMaxTokenAge() time.Duration {
+	if c.Trading.MaxTokenAgeMs <= 0 {
+		return time.Duration(0) // No age limit
+	}
+	return time.Duration(c.Trading.MaxTokenAgeMs) * time.Millisecond
+}
+
+func (c *Config) GetMinDiscoveryDelay() time.Duration {
+	if c.Trading.MinDiscoveryDelayMs <= 0 {
+		return time.Duration(0) // No minimum delay
+	}
+	return time.Duration(c.Trading.MinDiscoveryDelayMs) * time.Millisecond
+}
+
+func (c *Config) IsTokenAgeValid(tokenAge time.Duration) bool {
+	maxAge := c.GetMaxTokenAge()
+	if maxAge == 0 {
+		return true // No age limit
+	}
+	return tokenAge <= maxAge
+}
+
+func (c *Config) IsDiscoveryDelayValid(timeSinceDiscovery time.Duration) bool {
+	minDelay := c.GetMinDiscoveryDelay()
+	if minDelay == 0 {
+		return true // No minimum delay
+	}
+	return timeSinceDiscovery >= minDelay
+}
+
 // Add to setDefaults function:
 func setDefaultsUltraFast() {
 	// Ultra Fast Mode defaults
@@ -899,6 +961,15 @@ func getEnvString(key, defaultValue string) string {
 func getEnvInt(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
 		if intValue, err := strconv.Atoi(value); err == nil {
+			return intValue
+		}
+	}
+	return defaultValue
+}
+
+func getEnvInt64(key string, defaultValue int64) int64 {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.ParseInt(value, 10, 64); err == nil {
 			return intValue
 		}
 	}
