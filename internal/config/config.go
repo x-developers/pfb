@@ -212,11 +212,6 @@ func LoadConfig(configPath string, envPath string) (*Config, error) {
 		return nil, fmt.Errorf("config validation failed: %w", err)
 	}
 
-	// Validate and post-process config
-	if err := validateUltraFastConfig(config); err != nil {
-		return nil, fmt.Errorf("config validation failed: %w", err)
-	}
-
 	return config, nil
 }
 
@@ -651,6 +646,32 @@ func validateConfig(config *Config) error {
 		return fmt.Errorf("failed to create trade log directory %s: %w", config.Logging.TradeLogDir, err)
 	}
 
+	if config.UltraFast.Enabled {
+		// Safety checks for ultra-fast mode
+		if config.UltraFast.ParallelWorkers > 10 {
+			return fmt.Errorf("ultra_fast.parallel_workers must not exceed 10 (got %d)", config.UltraFast.ParallelWorkers)
+		}
+
+		if config.UltraFast.MaxTokensPerSecond > 100 {
+			return fmt.Errorf("ultra_fast.max_tokens_per_second must not exceed 100 (got %d)", config.UltraFast.MaxTokensPerSecond)
+		}
+
+		if config.UltraFast.PriorityOverSafety {
+			// Warn about extremely dangerous mode
+			fmt.Println("⚠️ WARNING: Priority over safety mode enabled - this is extremely risky!")
+		}
+
+		if config.UltraFast.FireAndForget && !config.UltraFast.NoConfirmation {
+			// Auto-enable no confirmation for fire and forget
+			config.UltraFast.NoConfirmation = true
+		}
+
+		// Ensure minimum safety measures in ultra-fast mode
+		if config.Trading.BuyAmountSOL > 1.0 && config.UltraFast.SkipValidation {
+			return fmt.Errorf("buy amount too high for ultra-fast mode with skip validation: %.3f SOL", config.Trading.BuyAmountSOL)
+		}
+	}
+
 	return nil
 }
 
@@ -839,37 +860,6 @@ func bindUltraFastEnvVariables() {
 	viper.BindEnv("ultra_fast.log_latency", "PUMPBOT_ULTRA_FAST_LOG_LATENCY")
 	viper.BindEnv("ultra_fast.max_tokens_per_second", "PUMPBOT_ULTRA_FAST_MAX_TOKENS_PER_SECOND")
 	viper.BindEnv("ultra_fast.immediate_execution", "PUMPBOT_ULTRA_FAST_IMMEDIATE_EXECUTION")
-}
-
-// Validation for ultra-fast config
-func validateUltraFastConfig(config *Config) error {
-	if config.UltraFast.Enabled {
-		// Safety checks for ultra-fast mode
-		if config.UltraFast.ParallelWorkers > 10 {
-			return fmt.Errorf("ultra_fast.parallel_workers must not exceed 10 (got %d)", config.UltraFast.ParallelWorkers)
-		}
-
-		if config.UltraFast.MaxTokensPerSecond > 100 {
-			return fmt.Errorf("ultra_fast.max_tokens_per_second must not exceed 100 (got %d)", config.UltraFast.MaxTokensPerSecond)
-		}
-
-		if config.UltraFast.PriorityOverSafety {
-			// Warn about extremely dangerous mode
-			fmt.Println("⚠️ WARNING: Priority over safety mode enabled - this is extremely risky!")
-		}
-
-		if config.UltraFast.FireAndForget && !config.UltraFast.NoConfirmation {
-			// Auto-enable no confirmation for fire and forget
-			config.UltraFast.NoConfirmation = true
-		}
-
-		// Ensure minimum safety measures in ultra-fast mode
-		if config.Trading.BuyAmountSOL > 1.0 && config.UltraFast.SkipValidation {
-			return fmt.Errorf("buy amount too high for ultra-fast mode with skip validation: %.3f SOL", config.Trading.BuyAmountSOL)
-		}
-	}
-
-	return nil
 }
 
 // Helper functions for environment variables
