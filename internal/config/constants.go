@@ -79,10 +79,10 @@ const (
 	DefaultSlippageBP = 500 // 5%
 
 	// Minimum SOL amount for trades (0.001 SOL)
-	MinTradeAmountSOL = 0.001
+	MinTradeAmountSOL = 0.0001
 
 	// Maximum SOL amount for trades (1 SOL)
-	MaxTradeAmountSOL = 1.0
+	MaxTradeAmountSOL = 0.1
 
 	// Default buy amount in SOL
 	DefaultBuyAmountSOL = 0.01

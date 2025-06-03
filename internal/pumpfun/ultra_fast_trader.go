@@ -43,6 +43,11 @@ type UltraFastTrader struct {
 	skipValidation  bool
 	preSignedTxPool []*PreSignedTransaction
 	poolMutex       sync.Mutex
+
+	// NEW: Enhanced statistics for timing validation
+	rejectedByTiming int64 // Количество токенов отклоненных по времени
+	staleTokens      int64 // Количество устаревших токенов
+	startTime        time.Time
 }
 
 type PreSignedTransaction struct {
@@ -66,6 +71,7 @@ func NewUltraFastTrader(
 		precomputedInstructions: make(map[string]types.Instruction),
 		fastestTrade:            time.Hour,                // Initialize with large value
 		skipValidation:          config.Strategy.YoloMode, // Skip all validations in YOLO mode
+		startTime:               time.Now(),
 	}
 
 	// Pre-compute common instructions
@@ -96,18 +102,89 @@ func (uft *UltraFastTrader) precomputeInstructions() {
 	uft.logger.Info("⚡ Pre-computed instructions for ultra-fast trading")
 }
 
-// ShouldBuyToken - минимальные проверки для скорости
+// ShouldBuyToken - минимальные проверки для скорости с добавлением проверки возраста токена
 func (uft *UltraFastTrader) ShouldBuyToken(ctx context.Context, tokenEvent *TokenEvent) (bool, string) {
+	// Log the timing analysis for ultra-fast mode
+	age := tokenEvent.GetAge()
+	timeSinceDiscovery := time.Since(tokenEvent.DiscoveredAt)
+
+	uft.logger.WithFields(map[string]interface{}{
+		"mint":                   tokenEvent.Mint.String(),
+		"discovered_at":          tokenEvent.DiscoveredAt.Format("15:04:05.000"),
+		"age_ms":                 age.Milliseconds(),
+		"time_since_discovery":   timeSinceDiscovery.Milliseconds(),
+		"processing_delay_ms":    tokenEvent.ProcessingDelayMs,
+		"max_age_ms":             uft.config.Trading.MaxTokenAgeMs,
+		"min_discovery_delay_ms": uft.config.Trading.MinDiscoveryDelayMs,
+		"ultra_fast":             true,
+	}).Debug("🕒 Ultra-fast timing analysis for token")
+
+	// NEW: Check if token is too old (даже в ultra-fast режиме)
+	if tokenEvent.IsStale(uft.config) {
+		uft.staleTokens++
+		reason := fmt.Sprintf("ULTRA-FAST: token too old: %dms (max: %dms)",
+			age.Milliseconds(), uft.config.Trading.MaxTokenAgeMs)
+
+		uft.logger.WithFields(map[string]interface{}{
+			"mint":       tokenEvent.Mint.String(),
+			"age_ms":     age.Milliseconds(),
+			"max_ms":     uft.config.Trading.MaxTokenAgeMs,
+			"ultra_fast": true,
+		}).Debug("⏰ Ultra-fast token rejected - too old")
+
+		return false, reason
+	}
+
+	//	NEW: Check minimum discovery delay (только если не skip validation)
+	if !uft.skipValidation && tokenEvent.ShouldWaitForDelay(uft.config) {
+		uft.rejectedByTiming++
+		waitTime := uft.config.GetMinDiscoveryDelay() - timeSinceDiscovery
+		reason := fmt.Sprintf("ULTRA-FAST: waiting for discovery delay: need %dms more",
+			waitTime.Milliseconds())
+
+		uft.logger.WithFields(map[string]interface{}{
+			"mint":         tokenEvent.Mint.String(),
+			"elapsed_ms":   timeSinceDiscovery.Milliseconds(),
+			"required_ms":  uft.config.Trading.MinDiscoveryDelayMs,
+			"wait_more_ms": waitTime.Milliseconds(),
+			"ultra_fast":   true,
+		}).Debug("⏱️ Ultra-fast token rejected - waiting for discovery delay")
+
+		return false, reason
+	}
+
+	// Если включен skipValidation, пропускаем все остальные проверки
 	if uft.skipValidation {
-		return true, "ULTRA-FAST: skipping validation"
+		uft.logger.WithFields(map[string]interface{}{
+			"mint":                tokenEvent.Mint.String(),
+			"age_ms":              age.Milliseconds(),
+			"discovery_delay_ms":  timeSinceDiscovery.Milliseconds(),
+			"processing_delay_ms": tokenEvent.ProcessingDelayMs,
+			"ultra_fast":          true,
+		}).Debug("✅ Ultra-fast token passed timing validation (skip validation enabled)")
+
+		return true, "ULTRA-FAST: skipping validation (timing checks passed)"
 	}
 
-	// Только самые базовые проверки
+	// Только самые базовые проверки для максимальной скорости
 	if tokenEvent.Mint == nil {
-		return false, "invalid mint"
+		return false, "ULTRA-FAST: invalid mint"
 	}
 
-	return true, "basic validation passed"
+	if tokenEvent.BondingCurve == nil {
+		return false, "ULTRA-FAST: invalid bonding curve"
+	}
+
+	// Log successful timing validation
+	uft.logger.WithFields(map[string]interface{}{
+		"mint":                tokenEvent.Mint.String(),
+		"age_ms":              age.Milliseconds(),
+		"discovery_delay_ms":  timeSinceDiscovery.Milliseconds(),
+		"processing_delay_ms": tokenEvent.ProcessingDelayMs,
+		"ultra_fast":          true,
+	}).Debug("✅ Ultra-fast token passed all validation including timing")
+
+	return true, "ULTRA-FAST: basic validation passed with timing checks"
 }
 
 // BuyToken - максимально быстрое выполнение покупки
@@ -168,12 +245,22 @@ func (uft *UltraFastTrader) executeUltraFastBuy(ctx context.Context, tokenEvent 
 	tradeTime := time.Since(startTime)
 	buyAmountSOL := uft.config.Trading.BuyAmountSOL
 
+	// Calculate delays for enhanced logging
+	age := tokenEvent.GetAge()
+	discoveryDelay := time.Since(tokenEvent.DiscoveredAt)
+	totalDelay := time.Since(tokenEvent.Timestamp)
+
 	uft.logger.WithFields(map[string]interface{}{
-		"signature":  signature,
-		"trade_time": tradeTime.Milliseconds(),
-		"mint":       tokenEvent.Mint.String(),
-		"ultra_fast": true,
-	}).Info("⚡ ULTRA-FAST TRADE EXECUTED")
+		"signature":           signature,
+		"trade_time":          tradeTime.Milliseconds(),
+		"mint":                tokenEvent.Mint.String(),
+		"ultra_fast":          true,
+		"age_ms":              age.Milliseconds(),
+		"discovery_delay_ms":  discoveryDelay.Milliseconds(),
+		"total_delay_ms":      totalDelay.Milliseconds(),
+		"processing_delay_ms": tokenEvent.ProcessingDelayMs,
+		"execution_delay_ms":  tradeTime.Milliseconds(),
+	}).Info("⚡⚡ ULTRA-FAST TRADE EXECUTED")
 
 	return &TradeResult{
 		Success:      true,
@@ -320,11 +407,16 @@ func (uft *UltraFastTrader) updateStatistics(startTime time.Time, success bool) 
 
 // Реализация TraderInterface
 func (uft *UltraFastTrader) Stop() {
+	uptime := time.Since(uft.startTime)
 	uft.logger.WithFields(map[string]interface{}{
-		"total_trades":      uft.totalTrades,
-		"successful_trades": uft.successfulTrades,
-		"fastest_trade_ms":  uft.fastestTrade.Milliseconds(),
-		"average_trade_ms":  uft.averageTradeTime.Milliseconds(),
+		"total_trades":       uft.totalTrades,
+		"successful_trades":  uft.successfulTrades,
+		"fastest_trade_ms":   uft.fastestTrade.Milliseconds(),
+		"average_trade_ms":   uft.averageTradeTime.Milliseconds(),
+		"rejected_by_timing": uft.rejectedByTiming,
+		"stale_tokens":       uft.staleTokens,
+		"uptime":             uptime.String(),
+		"ultra_fast":         true,
 	}).Info("🛑 Ultra-fast trader stopped")
 }
 
@@ -334,15 +426,29 @@ func (uft *UltraFastTrader) GetTradingStats() map[string]interface{} {
 		successRate = (float64(uft.successfulTrades) / float64(uft.totalTrades)) * 100
 	}
 
+	uptime := time.Since(uft.startTime)
+	lastTradeAgo := float64(0)
+	// For ultra-fast trader, we don't track lastTradeTime to keep it lightweight
+
 	return map[string]interface{}{
-		"trader_type":       "ultra_fast",
-		"total_trades":      uft.totalTrades,
-		"successful_trades": uft.successfulTrades,
-		"success_rate":      fmt.Sprintf("%.1f%%", successRate),
-		"fastest_trade_ms":  uft.fastestTrade.Milliseconds(),
-		"average_trade_ms":  uft.averageTradeTime.Milliseconds(),
-		"skip_validation":   uft.skipValidation,
-		"cached_blockhash":  uft.getCachedBlockhash() != "",
+		"trader_active":          true,
+		"mode":                   "ultra_fast",
+		"trader_type":            "ultra_fast",
+		"total_trades":           uft.totalTrades,
+		"successful_trades":      uft.successfulTrades,
+		"success_rate":           fmt.Sprintf("%.1f%%", successRate),
+		"fastest_trade_ms":       uft.fastestTrade.Milliseconds(),
+		"average_trade_ms":       uft.averageTradeTime.Milliseconds(),
+		"skip_validation":        uft.skipValidation,
+		"cached_blockhash":       uft.getCachedBlockhash() != "",
+		"uptime_seconds":         uptime.Seconds(),
+		"last_trade_ago":         lastTradeAgo,
+		"buy_amount_sol":         uft.config.Trading.BuyAmountSOL,
+		"slippage_bp":            uft.config.Trading.SlippageBP,
+		"rejected_by_timing":     uft.rejectedByTiming,
+		"stale_tokens":           uft.staleTokens,
+		"max_token_age_ms":       uft.config.Trading.MaxTokenAgeMs,
+		"min_discovery_delay_ms": uft.config.Trading.MinDiscoveryDelayMs,
 	}
 }
 

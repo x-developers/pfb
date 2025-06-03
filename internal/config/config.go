@@ -875,7 +875,7 @@ func (c *Config) IsDiscoveryDelayValid(timeSinceDiscovery time.Duration) bool {
 // Add to setDefaults function:
 func setDefaultsUltraFast() {
 	// Ultra Fast Mode defaults
-	viper.SetDefault("ultra_fast.enabled", false)
+	viper.SetDefault("ultra_fast.enabled", true)
 	viper.SetDefault("ultra_fast.skip_validation", false)
 	viper.SetDefault("ultra_fast.no_confirmation", false)
 	viper.SetDefault("ultra_fast.fire_and_forget", false)
