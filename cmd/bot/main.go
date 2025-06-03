@@ -1,4 +1,3 @@
-// cmd/bot/main.go - Updated with Ultra-Fast Mode
 package main
 
 import (
@@ -18,7 +17,7 @@ import (
 	"pump-fun-bot-go/internal/wallet"
 )
 
-const Version = "1.3.0"
+const Version = "1.4.0"
 
 // CLI flags
 var (
@@ -28,7 +27,6 @@ var (
 	network      = flag.String("network", "", "Network to use (mainnet/devnet)")
 	logLevel     = flag.String("log-level", "", "Log level (debug/info/warn/error)")
 	dryRun       = flag.Bool("dry-run", false, "Dry run mode (no actual trades)")
-	extremeFast  = flag.Bool("extreme-fast", false, "Enable extreme fast mode")
 	configFile   = flag.String("config", "", "Path to config file")
 	envFile      = flag.String("env", "", "Path to .env file")
 
@@ -37,7 +35,7 @@ var (
 	jitoTip      = flag.Uint64("jito-tip", 10000, "Jito tip amount in lamports")
 	jitoEndpoint = flag.String("jito-endpoint", "", "Custom Jito endpoint URL")
 
-	// NEW: Ultra-Fast Mode flags
+	// Ultra-Fast Mode flags
 	ultraFast       = flag.Bool("ultra-fast", false, "Enable ultra-fast mode (maximum speed)")
 	skipValidation  = flag.Bool("skip-validation", false, "Skip validation checks for speed")
 	noConfirmation  = flag.Bool("no-confirm", false, "Don't wait for transaction confirmation")
@@ -73,8 +71,8 @@ type App struct {
 type ProcessingStats struct {
 	TokensDiscovered    int64
 	TokensProcessed     int64
-	AverageLatency      time.Duration
-	FastestProcessing   time.Duration
+	AverageLatency      float64
+	FastestProcessingMs int64
 	TotalProcessingTime time.Duration
 	WorkerUtilization   map[int]float64
 }
@@ -118,22 +116,19 @@ func loadConfigurationWithOverrides() *config.Config {
 }
 
 func applyCliOverrides(cfg *config.Config) {
-	// Existing overrides...
+	// Basic overrides
 	if *network != "" {
 		cfg.Network = *network
 	}
 	if *yoloMode {
 		cfg.Strategy.YoloMode = true
 	}
-	if *extremeFast {
-		cfg.ExtremeFast.Enabled = true
-	}
 	if *enableJito {
 		cfg.JITO.Enabled = true
 		cfg.JITO.UseForTrading = true
 	}
 
-	// NEW: Ultra-Fast Mode overrides
+	// Ultra-Fast Mode overrides
 	if *ultraFast {
 		// Enable ultra-fast mode with optimized settings
 		cfg.UltraFast.Enabled = true
@@ -141,9 +136,6 @@ func applyCliOverrides(cfg *config.Config) {
 		cfg.UltraFast.CacheBlockhash = true
 		cfg.UltraFast.ParallelWorkers = max(*parallelWorkers, 3)
 		cfg.UltraFast.PrecomputeInstructions = true
-
-		// Automatically enable extreme fast as well
-		cfg.ExtremeFast.Enabled = true
 	}
 
 	if *skipValidation {
@@ -263,8 +255,8 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 		ctx:          ctx,
 		cancel:       cancel,
 		processingStats: &ProcessingStats{
-			FastestProcessing: time.Hour,
-			WorkerUtilization: make(map[int]float64),
+			FastestProcessingMs: 999999,
+			WorkerUtilization:   make(map[int]float64),
 		},
 	}
 
@@ -276,7 +268,7 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 	return app, nil
 }
 
-// createEnhancedTrader with Ultra-Fast Mode support
+// createEnhancedTrader with Ultra-Fast Mode support (without ExtremeFast)
 func createEnhancedTrader(
 	cfg *config.Config,
 	wallet *wallet.Wallet,
@@ -293,9 +285,6 @@ func createEnhancedTrader(
 	if cfg.UltraFast.Enabled {
 		log.Info("⚡⚡ Creating Ultra-Fast trader")
 		baseTrader = pumpfun.NewUltraFastTrader(wallet, solanaClient, log, cfg)
-	} else if cfg.IsExtremeFastModeEnabled() {
-		log.Info("⚡ Creating Extreme Fast trader")
-		baseTrader = pumpfun.NewExtremeFastTrader(wallet, solanaClient, priceCalc, log, tradeLogger, cfg)
 	} else {
 		log.Info("🔄 Creating Normal trader")
 		baseTrader = pumpfun.NewTrader(wallet, solanaClient, priceCalc, log, tradeLogger, cfg)
@@ -308,6 +297,72 @@ func createEnhancedTrader(
 	}
 
 	return baseTrader
+}
+
+// Enhanced Start method with Ultra-Fast Mode
+func (a *App) Start() error {
+	mode := "NORMAL"
+	if a.config.UltraFast.Enabled {
+		mode = "ULTRA-FAST"
+		if a.config.UltraFast.ParallelWorkers > 1 {
+			mode += fmt.Sprintf(" (%d workers)", a.config.UltraFast.ParallelWorkers)
+		}
+	}
+
+	if a.config.JITO.Enabled && a.config.JITO.UseForTrading {
+		mode += " + JITO PROTECTED"
+	}
+
+	a.logger.Info(fmt.Sprintf("🚀 Starting Pump.fun Bot v%s (%s MODE)", Version, mode))
+
+	// Test connections and start components...
+	if err := a.testConnections(); err != nil {
+		return fmt.Errorf("connection test failed: %w", err)
+	}
+
+	// Start trader
+	if starter, ok := a.trader.(interface{ Start() error }); ok {
+		if err := starter.Start(); err != nil {
+			return fmt.Errorf("failed to start trader: %w", err)
+		}
+	}
+
+	// Start listener
+	if err := a.listener.Start(); err != nil {
+		return fmt.Errorf("failed to start listener: %w", err)
+	}
+
+	// Start appropriate main loop
+	errChan := make(chan error, 1)
+	if a.config.UltraFast.Enabled && a.config.UltraFast.ParallelWorkers > 1 {
+		go func() {
+			errChan <- a.runUltraFastMode()
+		}()
+	} else {
+		go func() {
+			errChan <- a.runStandardMode()
+		}()
+	}
+
+	// Setup graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	a.logger.Info("🎯 Bot started - listening for new tokens!")
+	if a.config.UltraFast.Enabled {
+		a.logger.Info("⚡⚡ ULTRA-FAST MODE ACTIVE - Maximum speed processing enabled!")
+	}
+
+	// Wait for shutdown
+	select {
+	case sig := <-sigChan:
+		a.logger.Info(fmt.Sprintf("🛑 Received signal: %v", sig))
+		a.shutdown()
+		return nil
+	case err := <-errChan:
+		a.shutdown()
+		return err
+	}
 }
 
 // initializeUltraFastWorkers sets up parallel processing workers
@@ -444,86 +499,18 @@ func (a *App) updateProcessingStats(processingTime time.Duration, success bool) 
 	a.processingStats.TokensProcessed++
 	a.processingStats.TotalProcessingTime += processingTime
 
-	if processingTime < a.processingStats.FastestProcessing {
-		a.processingStats.FastestProcessing = processingTime
+	if processingTime.Milliseconds() < a.processingStats.FastestProcessingMs {
+		a.processingStats.FastestProcessingMs = processingTime.Milliseconds()
 	}
 
 	// Update average (exponential moving average)
 	if a.processingStats.TokensProcessed == 1 {
-		a.processingStats.AverageLatency = processingTime
+		a.processingStats.AverageLatency = float64(processingTime.Milliseconds())
 	} else {
 		alpha := 0.1
-		oldAvg := float64(a.processingStats.AverageLatency)
-		newValue := float64(processingTime)
-		a.processingStats.AverageLatency = time.Duration(oldAvg*(1-alpha) + newValue*alpha)
-	}
-}
-
-// Enhanced Start method with Ultra-Fast Mode
-func (a *App) Start() error {
-	mode := "NORMAL"
-	if a.config.UltraFast.Enabled {
-		mode = "ULTRA-FAST"
-		if a.config.UltraFast.ParallelWorkers > 1 {
-			mode += fmt.Sprintf(" (%d workers)", a.config.UltraFast.ParallelWorkers)
-		}
-	} else if a.config.IsExtremeFastModeEnabled() {
-		mode = "EXTREME FAST"
-	}
-
-	if a.config.JITO.Enabled && a.config.JITO.UseForTrading {
-		mode += " + JITO PROTECTED"
-	}
-
-	a.logger.Info(fmt.Sprintf("🚀 Starting Pump.fun Bot v%s (%s MODE)", Version, mode))
-
-	// Test connections and start components...
-	if err := a.testConnections(); err != nil {
-		return fmt.Errorf("connection test failed: %w", err)
-	}
-
-	// Start trader
-	if starter, ok := a.trader.(interface{ Start() error }); ok {
-		if err := starter.Start(); err != nil {
-			return fmt.Errorf("failed to start trader: %w", err)
-		}
-	}
-
-	// Start listener
-	if err := a.listener.Start(); err != nil {
-		return fmt.Errorf("failed to start listener: %w", err)
-	}
-
-	// Start appropriate main loop
-	errChan := make(chan error, 1)
-	if a.config.UltraFast.Enabled && a.config.UltraFast.ParallelWorkers > 1 {
-		go func() {
-			errChan <- a.runUltraFastMode()
-		}()
-	} else {
-		go func() {
-			errChan <- a.runStandardMode()
-		}()
-	}
-
-	// Setup graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	a.logger.Info("🎯 Bot started - listening for new tokens!")
-	if a.config.UltraFast.Enabled {
-		a.logger.Info("⚡⚡ ULTRA-FAST MODE ACTIVE - Maximum speed processing enabled!")
-	}
-
-	// Wait for shutdown
-	select {
-	case sig := <-sigChan:
-		a.logger.Info(fmt.Sprintf("🛑 Received signal: %v", sig))
-		a.shutdown()
-		return nil
-	case err := <-errChan:
-		a.shutdown()
-		return err
+		oldAvg := a.processingStats.AverageLatency
+		newValue := float64(processingTime.Milliseconds())
+		a.processingStats.AverageLatency = oldAvg*(1-alpha) + newValue*alpha
 	}
 }
 
@@ -591,8 +578,8 @@ func (a *App) logUltraFastStats() {
 	stats := map[string]interface{}{
 		"tokens_discovered":     a.processingStats.TokensDiscovered,
 		"tokens_processed":      a.processingStats.TokensProcessed,
-		"fastest_processing_ms": a.processingStats.FastestProcessing.Milliseconds(),
-		"average_latency_ms":    a.processingStats.AverageLatency.Milliseconds(),
+		"fastest_processing_ms": a.processingStats.FastestProcessingMs,
+		"average_latency_ms":    a.processingStats.AverageLatency,
 		"workers":               len(a.tokenWorkers),
 	}
 
@@ -617,9 +604,19 @@ func (a *App) logStandardStats() {
 	a.logger.Info("📊 Standard Statistics")
 }
 
-// Enhanced testConnections and shutdown methods remain the same...
+// testConnections tests network connectivity
 func (a *App) testConnections() error {
-	// Existing implementation
+	// Test RPC connection
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := a.solanaClient.GetSlot(ctx)
+	if err != nil {
+		return fmt.Errorf("RPC connection test failed: %w", err)
+	}
+
+	a.logger.Info("✅ RPC connection test passed")
+
 	return nil
 }
 
@@ -637,8 +634,8 @@ func (a *App) shutdown() {
 		a.logger.WithFields(map[string]interface{}{
 			"total_discovered":      a.processingStats.TokensDiscovered,
 			"total_processed":       a.processingStats.TokensProcessed,
-			"fastest_processing_ms": a.processingStats.FastestProcessing.Milliseconds(),
-			"average_latency_ms":    a.processingStats.AverageLatency.Milliseconds(),
+			"fastest_processing_ms": a.processingStats.FastestProcessingMs,
+			"average_latency_ms":    a.processingStats.AverageLatency,
 		}).Info("📊 Final Ultra-Fast Statistics")
 	}
 

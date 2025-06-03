@@ -1,4 +1,4 @@
-# configs/bot.yaml - Enhanced with Ultra-Fast Mode
+# configs/bot.yaml - Enhanced with Ultra-Fast Mode only
 
 # Pump Fun Bot Configuration with Ultra-Fast Mode Support
 # Use ${VARIABLE_NAME:-default_value} syntax for environment variables
@@ -21,6 +21,8 @@ trading:
   auto_sell: ${PUMPBOT_TRADING_AUTO_SELL:-false}
   sell_delay_seconds: ${PUMPBOT_TRADING_SELL_DELAY_SECONDS:-30}
   sell_percentage: ${PUMPBOT_TRADING_SELL_PERCENTAGE:-100.0}
+  max_token_age_ms: ${PUMPBOT_TRADING_MAX_TOKEN_AGE_MS:-5000}
+  min_discovery_delay_ms: ${PUMPBOT_TRADING_MIN_DISCOVERY_DELAY_MS:-100}
 
 # Strategy settings
 strategy:
@@ -34,7 +36,7 @@ strategy:
   yolo_mode: ${PUMPBOT_STRATEGY_YOLO_MODE:-false}
   hold_only: ${PUMPBOT_STRATEGY_HOLD_ONLY:-false}
 
-# ⚡⚡ ULTRA-FAST MODE - NEW! Maximum Speed Trading
+# ⚡⚡ ULTRA-FAST MODE - Maximum Speed Trading
 ultra_fast:
   # Core ultra-fast settings
   enabled: ${PUMPBOT_ULTRA_FAST_ENABLED:-true}
@@ -73,19 +75,6 @@ ultra_fast:
   assume_ata_exists: ${PUMPBOT_ULTRA_FAST_ASSUME_ATA_EXISTS:-false}   # Assume ATA already exists
   immediate_execution: ${PUMPBOT_ULTRA_FAST_IMMEDIATE_EXECUTION:-true} # Execute without delay
   priority_over_safety: ${PUMPBOT_ULTRA_FAST_PRIORITY_OVER_SAFETY:-false}  # Speed over safety (VERY RISKY!)
-
-# Extreme Fast Mode settings - Enhanced
-extreme_fast:
-  enabled: ${PUMPBOT_EXTREME_FAST_ENABLED:-false}
-  priority_fee: ${PUMPBOT_EXTREME_FAST_PRIORITY_FEE:-100000}
-  compute_unit_limit: ${PUMPBOT_EXTREME_FAST_COMPUTE_LIMIT:-400000}
-  compute_unit_price: ${PUMPBOT_EXTREME_FAST_COMPUTE_PRICE:-1000}
-  max_precomputed_tx: ${PUMPBOT_EXTREME_FAST_MAX_PRECOMPUTED:-50}
-  refresh_blockhash_interval: ${PUMPBOT_EXTREME_FAST_BLOCKHASH_INTERVAL:-5}
-  max_slippage_bp: ${PUMPBOT_EXTREME_FAST_MAX_SLIPPAGE:-2000}
-  target_confirmation_time: ${PUMPBOT_EXTREME_FAST_TARGET_CONFIRM:-4}
-  use_jito: ${PUMPBOT_EXTREME_FAST_USE_JITO:-false}
-  jito_tip_amount: ${PUMPBOT_EXTREME_FAST_JITO_TIP:-10000}
 
 # JITO MEV Protection Settings
 jito:
@@ -165,7 +154,6 @@ advanced:
 # ========================================
 
 # Normal Mode:     Discovery → Execution: 300-800ms
-# Extreme Fast:    Discovery → Execution: 100-300ms
 # Ultra-Fast:      Discovery → Execution: 20-100ms
 # Ultra-Fast Max:  Discovery → Execution: 5-50ms
 
@@ -184,7 +172,6 @@ advanced:
 # ⚠️ fire_and_forget doesn't wait for confirmation
 # ⚠️ parallel_workers increases resource usage
 # ⚠️ priority_over_safety is EXTREMELY DANGEROUS
-# ⚠️ Higher speeds = higher priority fees
 # ⚠️ Always test on devnet first!
 # ⚠️ Monitor your wallet balance closely
 # ⚠️ Set reasonable rate limits (max_tokens_per_second)

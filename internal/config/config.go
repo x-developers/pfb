@@ -38,9 +38,6 @@ type Config struct {
 	// Advanced settings
 	Advanced AdvancedConfig `mapstructure:"advanced" yaml:"advanced"`
 
-	// Extreme Fast Mode settings
-	ExtremeFast ExtremeFastConfig `mapstructure:"extreme_fast" yaml:"extreme_fast"`
-
 	// Ultra Fast Mode settings
 	UltraFast UltraFastConfig `mapstructure:"ultra_fast" yaml:"ultra_fast"`
 }
@@ -100,20 +97,6 @@ type AdvancedConfig struct {
 	ConfirmTimeoutSec int  `mapstructure:"confirm_timeout_sec" yaml:"confirm_timeout_sec"`
 	EnableMetrics     bool `mapstructure:"enable_metrics" yaml:"enable_metrics"`
 	MetricsPort       int  `mapstructure:"metrics_port" yaml:"metrics_port"`
-}
-
-// ExtremeFastConfig contains configuration for extreme fast mode
-type ExtremeFastConfig struct {
-	Enabled                  bool   `mapstructure:"enabled" yaml:"enabled"`
-	PriorityFee              uint64 `mapstructure:"priority_fee" yaml:"priority_fee"`                             // Micro-lamports per compute unit
-	ComputeUnitLimit         uint32 `mapstructure:"compute_unit_limit" yaml:"compute_unit_limit"`                 // Max compute units
-	ComputeUnitPrice         uint64 `mapstructure:"compute_unit_price" yaml:"compute_unit_price"`                 // Micro-lamports per compute unit
-	MaxPrecomputedTx         int    `mapstructure:"max_precomputed_tx" yaml:"max_precomputed_tx"`                 // Number of precomputed transactions to maintain
-	RefreshBlockhashInterval int    `mapstructure:"refresh_blockhash_interval" yaml:"refresh_blockhash_interval"` // Seconds between blockhash refresh
-	UseJito                  bool   `mapstructure:"use_jito" yaml:"use_jito"`                                     // Use Jito MEV protection
-	JitoTipAmount            uint64 `mapstructure:"jito_tip_amount" yaml:"jito_tip_amount"`                       // Jito tip in lamports
-	MaxSlippageBP            int    `mapstructure:"max_slippage_bp" yaml:"max_slippage_bp"`                       // Maximum slippage in basis points
-	TargetConfirmationTime   int    `mapstructure:"target_confirmation_time" yaml:"target_confirmation_time"`     // Target confirmation time in seconds
 }
 
 // UltraFastConfig contains ultra-fast mode settings for maximum speed
@@ -656,22 +639,6 @@ func validateConfig(config *Config) error {
 			config.Trading.MinDiscoveryDelayMs, config.Trading.MaxTokenAgeMs)
 	}
 
-	// Validate extreme fast mode settings
-	if config.ExtremeFast.Enabled {
-		if config.ExtremeFast.MaxPrecomputedTx < 1 || config.ExtremeFast.MaxPrecomputedTx > 200 {
-			return fmt.Errorf("extreme_fast.max_precomputed_tx must be between 1 and 200")
-		}
-		if config.ExtremeFast.RefreshBlockhashInterval < 1 || config.ExtremeFast.RefreshBlockhashInterval > 60 {
-			return fmt.Errorf("extreme_fast.refresh_blockhash_interval must be between 1 and 60 seconds")
-		}
-		if config.ExtremeFast.MaxSlippageBP < 100 || config.ExtremeFast.MaxSlippageBP > 10000 {
-			return fmt.Errorf("extreme_fast.max_slippage_bp must be between 100 and 10000 (1%% to 100%%)")
-		}
-		if config.ExtremeFast.ComputeUnitLimit < 10000 || config.ExtremeFast.ComputeUnitLimit > 1400000 {
-			return fmt.Errorf("extreme_fast.compute_unit_limit must be between 10000 and 1400000")
-		}
-	}
-
 	// Create log directories if they don't exist
 	if config.Logging.LogToFile {
 		logDir := filepath.Dir(config.Logging.LogFilePath)
@@ -747,18 +714,6 @@ func GetConfigFromEnv(envPath string) *Config {
 			EnableMetrics:     getEnvBool("PUMPBOT_ADVANCED_ENABLE_METRICS", false),
 			MetricsPort:       getEnvInt("PUMPBOT_ADVANCED_METRICS_PORT", 8080),
 		},
-		ExtremeFast: ExtremeFastConfig{
-			Enabled:                  getEnvBool("PUMPBOT_EXTREME_FAST_ENABLED", false),
-			PriorityFee:              uint64(getEnvInt("PUMPBOT_EXTREME_FAST_PRIORITY_FEE", 100000)),
-			ComputeUnitLimit:         uint32(getEnvInt("PUMPBOT_EXTREME_FAST_COMPUTE_LIMIT", 400000)),
-			ComputeUnitPrice:         uint64(getEnvInt("PUMPBOT_EXTREME_FAST_COMPUTE_PRICE", 1000)),
-			MaxPrecomputedTx:         getEnvInt("PUMPBOT_EXTREME_FAST_MAX_PRECOMPUTED", 50),
-			RefreshBlockhashInterval: getEnvInt("PUMPBOT_EXTREME_FAST_BLOCKHASH_INTERVAL", 5),
-			UseJito:                  getEnvBool("PUMPBOT_EXTREME_FAST_USE_JITO", false),
-			JitoTipAmount:            uint64(getEnvInt("PUMPBOT_EXTREME_FAST_JITO_TIP", 10000)),
-			MaxSlippageBP:            getEnvInt("PUMPBOT_EXTREME_FAST_MAX_SLIPPAGE", 2000),
-			TargetConfirmationTime:   getEnvInt("PUMPBOT_EXTREME_FAST_TARGET_CONFIRM", 4),
-		},
 	}
 
 	// Set URLs if not provided via environment
@@ -777,39 +732,6 @@ func GetConfigFromEnv(envPath string) *Config {
 	}
 
 	return config
-}
-
-// Extreme Fast Mode helper methods
-func (c *Config) IsExtremeFastModeEnabled() bool {
-	return c.ExtremeFast.Enabled
-}
-
-func (c *Config) GetPriorityFee() uint64 {
-	if c.IsExtremeFastModeEnabled() {
-		return c.ExtremeFast.PriorityFee
-	}
-	return c.Trading.PriorityFee
-}
-
-func (c *Config) GetComputeUnitLimit() uint32 {
-	if c.IsExtremeFastModeEnabled() {
-		return c.ExtremeFast.ComputeUnitLimit
-	}
-	return 200000 // Default
-}
-
-func (c *Config) GetComputeUnitPrice() uint64 {
-	if c.IsExtremeFastModeEnabled() {
-		return c.ExtremeFast.ComputeUnitPrice
-	}
-	return 1000000 // Default from original config
-}
-
-func (c *Config) GetEffectiveSlippageBP() int {
-	if c.IsExtremeFastModeEnabled() {
-		return c.ExtremeFast.MaxSlippageBP
-	}
-	return c.Trading.SlippageBP
 }
 
 // IsUltraFastModeEnabled returns true if ultra-fast mode is enabled
