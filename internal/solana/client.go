@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -217,6 +218,39 @@ func (c *Client) GetAccountInfo(ctx context.Context, address string) (*AccountIn
 	}
 
 	return accountResponse.Value, nil
+}
+
+func (c *Client) GetTokenBalance(ctx context.Context, address string) (uint64, error) {
+	accountInfo, err := c.GetAccountInfo(ctx, address)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get account info: %w", err)
+	}
+
+	if accountInfo == nil {
+		return 0, fmt.Errorf("ATA account not found")
+	}
+
+	// Parse token account data to get balance
+	// Token account structure: https://docs.solana.com/developing/programming-model/accounts#token-accounts
+	// Offset 64: amount (u64)
+	if len(accountInfo.Data) < 1 || len(accountInfo.Data[0]) < 72 {
+		return 0, fmt.Errorf("invalid token account data")
+	}
+
+	// Decode base64 data
+	data := accountInfo.Data[0]
+	decodedData, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return 0, fmt.Errorf("failed to decode account data: %w", err)
+	}
+
+	if len(decodedData) < 72 {
+		return 0, fmt.Errorf("token account data too short")
+	}
+
+	// Extract amount (little-endian u64 at offset 64)
+	amount := binary.LittleEndian.Uint64(decodedData[64:72])
+	return amount, nil
 }
 
 // GetTransaction gets transaction information

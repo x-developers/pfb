@@ -143,7 +143,7 @@ func (as *AutoSeller) performAutoSell(request AutoSellRequest, startTime time.Ti
 	if as.config.IsTokenBasedTrading() {
 		tokenBalance = as.config.Trading.BuyAmountTokens
 	} else {
-		balance, err := as.getTokenBalance(ctx, ataAddress)
+		balance, err := as.rpcClient.GetTokenBalance(ctx, ataAddress.String())
 		if err != nil {
 			result.Error = fmt.Sprintf("failed to get token balance: %v", err)
 			result.TotalTime = time.Since(startTime)
@@ -183,7 +183,7 @@ func (as *AutoSeller) performAutoSell(request AutoSellRequest, startTime time.Ti
 	// Step 4: Close ATA if requested and all tokens were sold
 	if request.CloseATA && sellAmount == tokenBalance {
 		as.logger.Info("🗑️ Closing ATA account...")
-		closeResult := as.closeATA(ctx, ataAddress, *request.TokenEvent.Mint)
+		closeResult := as.closeATA(ctx, ataAddress)
 		result.CloseResult = closeResult
 	}
 
@@ -191,40 +191,6 @@ func (as *AutoSeller) performAutoSell(request AutoSellRequest, startTime time.Ti
 	result.TotalTime = time.Since(startTime)
 
 	return result
-}
-
-// getTokenBalance gets the token balance for the ATA
-func (as *AutoSeller) getTokenBalance(ctx context.Context, ataAddress common.PublicKey) (uint64, error) {
-	accountInfo, err := as.rpcClient.GetAccountInfo(ctx, ataAddress.String())
-	if err != nil {
-		return 0, fmt.Errorf("failed to get account info: %w", err)
-	}
-
-	if accountInfo == nil {
-		return 0, fmt.Errorf("ATA account not found")
-	}
-
-	// Parse token account data to get balance
-	// Token account structure: https://docs.solana.com/developing/programming-model/accounts#token-accounts
-	// Offset 64: amount (u64)
-	if len(accountInfo.Data) < 1 || len(accountInfo.Data[0]) < 72 {
-		return 0, fmt.Errorf("invalid token account data")
-	}
-
-	// Decode base64 data
-	data := accountInfo.Data[0]
-	decodedData, err := base64.StdEncoding.DecodeString(data)
-	if err != nil {
-		return 0, fmt.Errorf("failed to decode account data: %w", err)
-	}
-
-	if len(decodedData) < 72 {
-		return 0, fmt.Errorf("token account data too short")
-	}
-
-	// Extract amount (little-endian u64 at offset 64)
-	amount := binary.LittleEndian.Uint64(decodedData[64:72])
-	return amount, nil
 }
 
 // executeSellTransaction executes the sell transaction
@@ -332,7 +298,7 @@ func (as *AutoSeller) createSellInstruction(
 }
 
 // closeATA closes the Associated Token Account and reclaims rent
-func (as *AutoSeller) closeATA(ctx context.Context, ataAddress common.PublicKey, mint common.PublicKey) *ATACloseResult {
+func (as *AutoSeller) closeATA(ctx context.Context, ataAddress common.PublicKey) *ATACloseResult {
 	result := &ATACloseResult{
 		Success: false,
 	}
