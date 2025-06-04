@@ -44,14 +44,16 @@ type Config struct {
 
 // TradingConfig contains trading-related settings
 type TradingConfig struct {
-	BuyAmountSOL float64 `mapstructure:"buy_amount_sol" yaml:"buy_amount_sol"`
-	SlippageBP   int     `mapstructure:"slippage_bp" yaml:"slippage_bp"`
-	MaxGasPrice  uint64  `mapstructure:"max_gas_price" yaml:"max_gas_price"`
-	PriorityFee  uint64  `mapstructure:"priority_fee" yaml:"priority_fee"`
+	BuyAmountSOL    float64 `mapstructure:"buy_amount_sol" yaml:"buy_amount_sol"`
+	BuyAmountTokens uint64  `mapstructure:"buy_amount_tokens" yaml:"buy_amount_tokens"`
+	UseTokenAmount  bool    `mapstructure:"use_token_amount" yaml:"use_token_amount"`
+	SlippageBP      int     `mapstructure:"slippage_bp" yaml:"slippage_bp"`
+	MaxGasPrice     uint64  `mapstructure:"max_gas_price" yaml:"max_gas_price"`
+	PriorityFee     uint64  `mapstructure:"priority_fee" yaml:"priority_fee"`
 
 	// Auto-sell settings
 	AutoSell          bool    `mapstructure:"auto_sell" yaml:"auto_sell"`
-	SellDelaySeconds  int     `mapstructure:"sell_delay_seconds" yaml:"sell_delay_seconds"`
+	SellDelayMs       int64   `mapstructure:"sell_delay_ms" yaml:"sell_delay_ms"` // CHANGED: now in milliseconds
 	SellPercentage    float64 `mapstructure:"sell_percentage" yaml:"sell_percentage"`
 	CloseATAAfterSell bool    `mapstructure:"close_ata_after_sell" yaml:"close_ata_after_sell"`
 
@@ -319,12 +321,16 @@ func bindEnvVariables() {
 	viper.BindEnv("rpc_api_key", "PUMPBOT_RPC_API_KEY")
 	viper.BindEnv("private_key", "PUMPBOT_PRIVATE_KEY")
 
-	// Trading variables
 	viper.BindEnv("trading.buy_amount_sol", "PUMPBOT_TRADING_BUY_AMOUNT_SOL")
+	viper.BindEnv("trading.buy_amount_tokens", "PUMPBOT_TRADING_BUY_AMOUNT_TOKENS")
+	viper.BindEnv("trading.use_token_amount", "PUMPBOT_TRADING_USE_TOKEN_AMOUNT")
 	viper.BindEnv("trading.slippage_bp", "PUMPBOT_TRADING_SLIPPAGE_BP")
 	viper.BindEnv("trading.priority_fee", "PUMPBOT_TRADING_PRIORITY_FEE")
 	viper.BindEnv("trading.auto_sell", "PUMPBOT_TRADING_AUTO_SELL")
-	viper.BindEnv("trading.sell_delay_seconds", "PUMPBOT_TRADING_SELL_DELAY_SECONDS")
+	viper.BindEnv("trading.sell_delay_ms", "PUMPBOT_TRADING_SELL_DELAY_MS")
+	viper.BindEnv("trading.sell_percentage", "PUMPBOT_TRADING_SELL_PERCENTAGE")
+	viper.BindEnv("trading.close_ata_after_sell", "PUMPBOT_TRADING_CLOSE_ATA_AFTER_SELL")
+
 	viper.BindEnv("trading.max_token_age_ms", "PUMPBOT_TRADING_MAX_TOKEN_AGE_MS")
 	viper.BindEnv("trading.min_discovery_delay_ms", "PUMPBOT_TRADING_MIN_DISCOVERY_DELAY_MS")
 
@@ -543,16 +549,21 @@ func setDefaults() {
 	viper.SetDefault("ws_url", "")
 
 	viper.SetDefault("trading.buy_amount_sol", DefaultBuyAmountSOL)
+	viper.SetDefault("trading.buy_amount_tokens", 1000000)
+	viper.SetDefault("trading.use_token_amount", true)
 	viper.SetDefault("trading.slippage_bp", DefaultSlippageBP)
 	viper.SetDefault("trading.max_gas_price", 0)
 	viper.SetDefault("trading.priority_fee", 0)
-	viper.SetDefault("trading.auto_sell", false)
-	viper.SetDefault("trading.sell_delay_seconds", 30)
+
+	viper.SetDefault("trading.auto_sell", true)
+	viper.SetDefault("trading.sell_delay_ms", 1000)
 	viper.SetDefault("trading.sell_percentage", 100.0)
+	viper.SetDefault("trading.close_ata_after_sell", true)
+
 	viper.SetDefault("trading.take_profit_percent", 50.0)
 	viper.SetDefault("trading.stop_loss_percent", -20.0)
-	viper.SetDefault("trading.max_token_age_ms", 5000)      // NEW: 5 seconds max age
-	viper.SetDefault("trading.min_discovery_delay_ms", 100) // NEW: 100ms minimum delay
+	viper.SetDefault("trading.max_token_age_ms", 5000)
+	viper.SetDefault("trading.min_discovery_delay_ms", 100)
 
 	// Strategy defaults
 	viper.SetDefault("strategy.type", "sniper")
@@ -697,8 +708,17 @@ func validateConfig(config *Config) error {
 			return fmt.Errorf("sell_percentage must be between 1 and 100, got %.1f", config.Trading.SellPercentage)
 		}
 
-		if config.Trading.SellDelaySeconds < 0 {
-			return fmt.Errorf("sell_delay_seconds cannot be negative, got %d", config.Trading.SellDelaySeconds)
+		if config.Trading.SellDelayMs < 0 {
+			return fmt.Errorf("sell_delay cannot be negative, got %d", config.Trading.SellDelayMs)
+		}
+	}
+
+	if config.Trading.UseTokenAmount {
+		if config.Trading.BuyAmountTokens == 0 {
+			return fmt.Errorf("buy_amount_tokens must be greater than 0 when using token-based trading")
+		}
+		if config.Trading.BuyAmountTokens > 1000000000000 { // 1 trillion tokens max
+			return fmt.Errorf("buy_amount_tokens is too large: %d", config.Trading.BuyAmountTokens)
 		}
 	}
 
@@ -724,7 +744,7 @@ func GetConfigFromEnv(envPath string) *Config {
 			BuyAmountSOL:        getEnvFloat("PUMPBOT_TRADING_BUY_AMOUNT_SOL", DefaultBuyAmountSOL),
 			SlippageBP:          getEnvInt("PUMPBOT_TRADING_SLIPPAGE_BP", DefaultSlippageBP),
 			AutoSell:            getEnvBool("PUMPBOT_TRADING_AUTO_SELL", false),
-			SellDelaySeconds:    getEnvInt("PUMPBOT_TRADING_SELL_DELAY_SECONDS", 1),
+			SellDelayMs:         getEnvInt64("PUMPBOT_TRADING_SELL_DELAY_SECONDS", 100),
 			SellPercentage:      getEnvFloat("PUMPBOT_TRADING_SELL_PERCENTAGE", 100.0),
 			TakeProfitPercent:   getEnvFloat("PUMPBOT_TRADING_TAKE_PROFIT_PERCENT", 50.0),
 			StopLossPercent:     getEnvFloat("PUMPBOT_TRADING_STOP_LOSS_PERCENT", -20.0),
@@ -843,6 +863,18 @@ func (c *Config) IsDiscoveryDelayValid(timeSinceDiscovery time.Duration) bool {
 		return true // No minimum delay
 	}
 	return timeSinceDiscovery >= minDelay
+}
+
+func (c *Config) IsTokenBasedTrading() bool {
+	return c.Trading.UseTokenAmount
+}
+
+// Additional helper methods for configuration validation and access
+func (c *Config) GetBuyAmountDescription() string {
+	if c.Trading.UseTokenAmount {
+		return fmt.Sprintf("%d tokens", c.Trading.BuyAmountTokens)
+	}
+	return fmt.Sprintf("%.3f SOL", c.Trading.BuyAmountSOL)
 }
 
 // Add to setDefaults function:

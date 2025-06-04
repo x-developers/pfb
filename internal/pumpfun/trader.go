@@ -206,35 +206,31 @@ func (t *Trader) BuyToken(ctx context.Context, tokenEvent *TokenEvent) (*TradeRe
 
 // scheduleAutoSell планирует автоматическую продажу после покупки
 func (t *Trader) scheduleAutoSell(tokenEvent *TokenEvent, purchaseResult *TradeResult) {
-	// Создаем запрос на автопродажу
 	autoSellRequest := AutoSellRequest{
 		TokenEvent:     tokenEvent,
 		PurchaseResult: purchaseResult,
-		DelayMs:        int64(t.config.Trading.SellDelaySeconds * 1000), // Convert seconds to milliseconds
+		DelayMs:        t.config.Trading.SellDelayMs,
 		SellPercentage: t.config.Trading.SellPercentage,
-		CloseATA:       true, // Always close ATA after selling
+		CloseATA:       t.config.Trading.CloseATAAfterSell,
 	}
 
-	// Логируем планирование автопродажи
 	t.logger.WithFields(map[string]interface{}{
 		"mint":            tokenEvent.Mint.String(),
 		"purchase_amount": purchaseResult.AmountSOL,
 		"delay_ms":        autoSellRequest.DelayMs,
 		"sell_percentage": autoSellRequest.SellPercentage,
 		"auto_sell":       true,
+		"token_based":     t.config.IsTokenBasedTrading(),
 	}).Info("📅 Scheduling auto-sell operation")
 
-	// Запускаем автопродажу
 	t.autoSeller.ScheduleAutoSell(autoSellRequest)
 	t.autoSells++
 }
 
-// executeUltraFastBuy - основная логика быстрой покупки
+// executeUltraFastBuy - основная логика быстрой покупки с поддержкой токенов
 func (t *Trader) executeUltraFastBuy(ctx context.Context, tokenEvent *TokenEvent, startTime time.Time) (*TradeResult, error) {
-	// 1. Быстрое создание инструкций (без RPC вызовов)
-	instructions := t.createFastInstructions(tokenEvent)
+	instructions := t.createFastInstructionsWithTokenSupport(tokenEvent)
 
-	// 2. Получение кэшированного blockhash
 	blockhash := t.getCachedBlockhash()
 	if blockhash == "" {
 		return &TradeResult{
@@ -244,7 +240,6 @@ func (t *Trader) executeUltraFastBuy(ctx context.Context, tokenEvent *TokenEvent
 		}, fmt.Errorf("Empty cached blockhash queue. Skipping...")
 	}
 
-	// 3. Создание транзакции
 	transaction, err := types.NewTransaction(types.NewTransactionParam{
 		Signers: []types.Account{t.wallet.GetAccount()},
 		Message: types.NewMessage(types.NewMessageParam{
@@ -261,7 +256,6 @@ func (t *Trader) executeUltraFastBuy(ctx context.Context, tokenEvent *TokenEvent
 		}, err
 	}
 
-	// 4. Немедленная отправка (без подтверждения)
 	signature, err := t.wallet.SendTransaction(ctx, transaction)
 	if err != nil {
 		return &TradeResult{
@@ -272,7 +266,18 @@ func (t *Trader) executeUltraFastBuy(ctx context.Context, tokenEvent *TokenEvent
 	}
 
 	tradeTime := time.Since(startTime)
-	buyAmountSOL := t.config.Trading.BuyAmountSOL
+
+	var buyAmountSOL float64
+	var tokenAmount uint64
+
+	if t.config.IsTokenBasedTrading() {
+		tokenAmount = t.config.Trading.BuyAmountTokens
+		// Примерная оценка SOL для логирования (можно улучшить)
+		buyAmountSOL = float64(tokenAmount) * 0.00001 // Примерная цена
+	} else {
+		buyAmountSOL = t.config.Trading.BuyAmountSOL
+		tokenAmount = 1000000 // Упрощенное значение
+	}
 
 	// Calculate delays for enhanced logging
 	age := tokenEvent.GetAge()
@@ -290,16 +295,91 @@ func (t *Trader) executeUltraFastBuy(ctx context.Context, tokenEvent *TokenEvent
 		"processing_delay_ms": tokenEvent.ProcessingDelayMs,
 		"execution_delay_ms":  tradeTime.Milliseconds(),
 		"auto_sell_enabled":   t.autoSeller.IsEnabled(),
+		"auto_sell_delay_ms":  t.config.Trading.SellDelayMs,
+		"token_based":         t.config.IsTokenBasedTrading(),
+		"buy_amount_sol":      buyAmountSOL,
+		"buy_amount_tokens":   tokenAmount,
 	}).Info("⚡⚡ ULTRA-FAST TRADE EXECUTED")
 
 	return &TradeResult{
 		Success:      true,
 		Signature:    signature,
 		AmountSOL:    buyAmountSOL,
-		AmountTokens: 1000000, // Упрощенное значение
-		Price:        buyAmountSOL / 1000000,
+		AmountTokens: tokenAmount,
+		Price:        buyAmountSOL / float64(tokenAmount),
 		TradeTime:    tradeTime.Milliseconds(),
 	}, nil
+}
+
+// NEW: createFastInstructionsWithTokenSupport - быстрое создание инструкций с поддержкой токенов
+func (t *Trader) createFastInstructionsWithTokenSupport(tokenEvent *TokenEvent) []types.Instruction {
+	instructions := make([]types.Instruction, 0, 3)
+
+	// Добавляем pre-computed инструкции
+	if t.config.Trading.PriorityFee > 0 {
+		instructions = append(instructions, t.priorityFeeInstruction)
+	}
+
+	instructions = append(instructions, t.computeBudgetInstruction)
+
+	// Создаем buy инструкцию с поддержкой токенов
+	buyInstruction := t.createBuyInstructionWithTokenSupport(tokenEvent)
+	instructions = append(instructions, buyInstruction)
+
+	return instructions
+}
+
+// NEW: createBuyInstructionWithTokenSupport - создание buy инструкции с поддержкой токенов
+func (t *Trader) createBuyInstructionWithTokenSupport(tokenEvent *TokenEvent) types.Instruction {
+	// Предполагаем что ATA уже существует или будет создан протоколом
+	userATA, _ := t.wallet.GetAssociatedTokenAddress(*tokenEvent.Mint)
+
+	return types.Instruction{
+		ProgramID: common.PublicKeyFromBytes(config.PumpFunProgramID),
+		Accounts: []types.AccountMeta{
+			{PubKey: common.PublicKeyFromBytes(config.PumpFunGlobal), IsSigner: false, IsWritable: false},
+			{PubKey: common.PublicKeyFromBytes(config.PumpFunFeeRecipient), IsSigner: false, IsWritable: true},
+			{PubKey: *tokenEvent.Mint, IsSigner: false, IsWritable: false},
+			{PubKey: *tokenEvent.BondingCurve, IsSigner: false, IsWritable: true},
+			{PubKey: *tokenEvent.AssociatedBondingCurve, IsSigner: false, IsWritable: true},
+			{PubKey: userATA, IsSigner: false, IsWritable: true},
+			{PubKey: t.wallet.GetPublicKey(), IsSigner: true, IsWritable: true},
+			{PubKey: common.SystemProgramID, IsSigner: false, IsWritable: false},
+			{PubKey: common.TokenProgramID, IsSigner: false, IsWritable: false},
+			{PubKey: common.PublicKeyFromBytes(config.RentProgramID), IsSigner: false, IsWritable: false},
+			{PubKey: common.PublicKeyFromBytes(config.PumpFunEventAuthority), IsSigner: false, IsWritable: false},
+			{PubKey: common.PublicKeyFromBytes(config.PumpFunProgramID), IsSigner: false, IsWritable: false},
+		},
+		Data: t.createBuyInstructionDataWithTokenSupport(),
+	}
+}
+
+// NEW: createBuyInstructionDataWithTokenSupport - данные для buy инструкции с поддержкой токенов
+func (t *Trader) createBuyInstructionDataWithTokenSupport() []byte {
+	discriminator := []byte{0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea}
+
+	var tokenAmount uint64
+	var maxSolCost uint64
+
+	if t.config.IsTokenBasedTrading() {
+		// Используем токены напрямую
+		tokenAmount = t.config.Trading.BuyAmountTokens
+		// Устанавливаем большое максимальное значение SOL для безопасности
+		maxSolCost = config.ConvertSOLToLamports(t.config.Trading.BuyAmountSOL * 2) // 2x от обычного SOL amount как safety margin
+	} else {
+		// Традиционный метод через SOL
+		buyAmountLamports := config.ConvertSOLToLamports(t.config.Trading.BuyAmountSOL)
+		tokenAmount = 1000000 // Фиксированное количество токенов
+		slippageFactor := 1.0 + float64(t.config.Trading.SlippageBP)/10000.0
+		maxSolCost = uint64(float64(buyAmountLamports) * slippageFactor)
+	}
+
+	data := make([]byte, 24)
+	copy(data[0:8], discriminator)
+	binary.LittleEndian.PutUint64(data[8:16], tokenAmount)
+	binary.LittleEndian.PutUint64(data[16:24], maxSolCost)
+
+	return data
 }
 
 // precomputeInstructions - предварительное вычисление инструкций
@@ -479,24 +559,33 @@ func (t *Trader) GetTradingStats() map[string]interface{} {
 	uptime := time.Since(t.startTime)
 
 	stats := map[string]interface{}{
-		"trader_active":          true,
-		"mode":                   "ultra_fast",
-		"trader_type":            "ultra_fast",
-		"total_trades":           t.totalTrades,
-		"successful_trades":      t.successfulTrades,
-		"auto_sells":             t.autoSells,
-		"success_rate":           fmt.Sprintf("%.1f%%", successRate),
-		"fastest_trade_ms":       t.fastestTrade.Milliseconds(),
-		"average_trade_ms":       t.averageTradeTime.Milliseconds(),
-		"skip_validation":        t.skipValidation,
-		"cached_blockhash":       t.getCachedBlockhash() != "",
-		"uptime_seconds":         uptime.Seconds(),
-		"buy_amount_sol":         t.config.Trading.BuyAmountSOL,
+		"trader_active":     true,
+		"mode":              "ultra_fast",
+		"trader_type":       "ultra_fast_with_auto_sell",
+		"total_trades":      t.totalTrades,
+		"successful_trades": t.successfulTrades,
+		"auto_sells":        t.autoSells,
+		"success_rate":      fmt.Sprintf("%.1f%%", successRate),
+		"fastest_trade_ms":  t.fastestTrade.Milliseconds(),
+		"average_trade_ms":  t.averageTradeTime.Milliseconds(),
+		"skip_validation":   t.skipValidation,
+		"cached_blockhash":  t.getCachedBlockhash() != "",
+		"uptime_seconds":    uptime.Seconds(),
+
+		// UPDATED: New trading method info
+		"token_based_trading": t.config.IsTokenBasedTrading(),
+		"buy_amount_sol":      t.config.Trading.BuyAmountSOL,
+		"buy_amount_tokens":   t.config.Trading.BuyAmountTokens,
+		"use_token_amount":    t.config.Trading.UseTokenAmount,
+
 		"slippage_bp":            t.config.Trading.SlippageBP,
 		"rejected_by_timing":     t.rejectedByTiming,
 		"stale_tokens":           t.staleTokens,
 		"max_token_age_ms":       t.config.Trading.MaxTokenAgeMs,
 		"min_discovery_delay_ms": t.config.Trading.MinDiscoveryDelayMs,
+
+		// UPDATED: Auto-sell with milliseconds
+		"auto_sell_delay_ms": t.config.Trading.SellDelayMs,
 	}
 
 	// Add auto-sell stats

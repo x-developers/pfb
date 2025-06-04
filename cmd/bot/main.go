@@ -28,12 +28,17 @@ var (
 	sellDelay      = flag.Int("sell-delay", 30, "Delay before auto-sell in seconds")
 	sellPercentage = flag.Float64("sell-percentage", 100.0, "Percentage of tokens to sell (100 = all)")
 	closeATA       = flag.Bool("close-ata", true, "Close ATA account after selling to reclaim rent")
-	matchPattern   = flag.String("match", "", "Filter tokens by name pattern")
-	network        = flag.String("network", "", "Network to use (mainnet/devnet)")
-	logLevel       = flag.String("log-level", "", "Log level (debug/info/warn/error)")
-	dryRun         = flag.Bool("dry-run", false, "Dry run mode (no actual trades)")
-	configFile     = flag.String("config", "", "Path to config file")
-	envFile        = flag.String("env", "", "Path to .env file")
+
+	useTokenAmount  = flag.Bool("use-tokens", true, "Use token amount instead of SOL amount")
+	buyAmountTokens = flag.Uint64("buy-tokens", 1000000, "Amount of tokens to buy")
+	buyAmountSOL    = flag.Float64("buy-sol", 0.01, "Amount of SOL to spend")
+
+	matchPattern = flag.String("match", "", "Filter tokens by name pattern")
+	network      = flag.String("network", "", "Network to use (mainnet/devnet)")
+	logLevel     = flag.String("log-level", "", "Log level (debug/info/warn/error)")
+	dryRun       = flag.Bool("dry-run", false, "Dry run mode (no actual trades)")
+	configFile   = flag.String("config", "", "Path to config file")
+	envFile      = flag.String("env", "", "Path to .env file")
 
 	// Jito flags
 	enableJito   = flag.Bool("jito", false, "Enable Jito MEV protection")
@@ -119,7 +124,6 @@ func loadConfigurationWithOverrides() *config.Config {
 	return cfg
 }
 
-// Updated applyCliOverrides function
 func applyCliOverrides(cfg *config.Config) {
 	// Basic overrides
 	if *network != "" {
@@ -137,18 +141,26 @@ func applyCliOverrides(cfg *config.Config) {
 		cfg.JITO.UseForTrading = true
 	}
 
-	// Auto-sell overrides
+	// Auto-sell overrides - UPDATED for milliseconds
 	if *autoSell {
 		cfg.Trading.AutoSell = true
-	}
-	if *sellDelay != 30 {
-		cfg.Trading.SellDelaySeconds = *sellDelay
 	}
 	if *sellPercentage != 100.0 {
 		cfg.Trading.SellPercentage = *sellPercentage
 	}
 	if !*closeATA {
 		cfg.Trading.CloseATAAfterSell = false
+	}
+
+	// NEW: Token-based trading overrides
+	if *useTokenAmount {
+		cfg.Trading.UseTokenAmount = true
+	}
+	if *buyAmountTokens != 1000000 {
+		cfg.Trading.BuyAmountTokens = *buyAmountTokens
+	}
+	if *buyAmountSOL != 0.01 {
+		cfg.Trading.BuyAmountSOL = *buyAmountSOL
 	}
 
 	// Ultra-Fast Mode is always enabled, but we can configure it
@@ -160,7 +172,7 @@ func applyCliOverrides(cfg *config.Config) {
 		cfg.Strategy.YoloMode = true // YOLO mode implies skip validation
 	}
 
-	// Auto-sell validation
+	// Auto-sell validation - UPDATED for milliseconds
 	if cfg.Trading.AutoSell && cfg.Strategy.HoldOnly {
 		log.Println("Warning: Auto-sell disabled because hold-only mode is enabled")
 		cfg.Trading.AutoSell = false
@@ -169,6 +181,17 @@ func applyCliOverrides(cfg *config.Config) {
 	if cfg.Trading.SellPercentage <= 0 || cfg.Trading.SellPercentage > 100 {
 		log.Printf("Warning: Invalid sell percentage %.1f%%, using default 100%%", cfg.Trading.SellPercentage)
 		cfg.Trading.SellPercentage = 100.0
+	}
+
+	// Validate sell delay
+	if cfg.Trading.SellDelayMs < 0 {
+		log.Printf("Warning: Invalid sell delay %dms, using default 1000ms", cfg.Trading.SellDelayMs)
+		cfg.Trading.SellDelayMs = 1000
+	}
+
+	// Log warnings for very short delays
+	if cfg.Trading.SellDelayMs < 100 {
+		log.Printf("⚠️ WARNING: Very short sell delay (%dms) is extremely risky!", cfg.Trading.SellDelayMs)
 	}
 }
 
@@ -289,7 +312,7 @@ func createTrader(
 
 	log.WithFields(map[string]interface{}{
 		"auto_sell_enabled": cfg.Trading.AutoSell,
-		"sell_delay_sec":    cfg.Trading.SellDelaySeconds,
+		"sell_delay_ms":     cfg.Trading.SellDelayMs,
 		"sell_percentage":   cfg.Trading.SellPercentage,
 		"close_ata":         cfg.Trading.CloseATAAfterSell,
 	}).Info("⚡⚡ Creating " + traderType + " trader")
@@ -332,20 +355,47 @@ func (a *App) Start() error {
 		mode += " + AUTO-SELL"
 	}
 
+	// NEW: Show trading mode
+	tradingMode := "SOL-BASED"
+	if a.config.IsTokenBasedTrading() {
+		tradingMode = "TOKEN-BASED"
+	}
+	mode += fmt.Sprintf(" (%s)", tradingMode)
+
 	a.logger.Info(fmt.Sprintf("🚀 Starting Pump.fun Bot v%s (%s MODE)", Version, mode))
 
-	// Log auto-sell configuration
+	// Log auto-sell configuration - UPDATED for milliseconds
 	if a.config.Trading.AutoSell {
 		a.logger.WithFields(map[string]interface{}{
-			"sell_delay_sec":    a.config.Trading.SellDelaySeconds,
+			"sell_delay_ms":     a.config.Trading.SellDelayMs, // CHANGED: now in milliseconds
 			"sell_percentage":   a.config.Trading.SellPercentage,
 			"close_ata":         a.config.Trading.CloseATAAfterSell,
 			"auto_sell_enabled": true,
 		}).Info("🤖 Auto-sell configuration active")
+
+		// Warn about very short delays
+		if a.config.Trading.SellDelayMs < 200 {
+			a.logger.WithField("delay_ms", a.config.Trading.SellDelayMs).
+				Warn("⚠️ Very short auto-sell delay - this is extremely risky!")
+		}
 	} else {
 		a.logger.Info("🚫 Auto-sell is disabled - tokens will be held")
 	}
 
+	// NEW: Log trading configuration
+	if a.config.IsTokenBasedTrading() {
+		a.logger.WithFields(map[string]interface{}{
+			"buy_amount_tokens": a.config.Trading.BuyAmountTokens,
+			"trading_mode":      "token_based",
+			"balance_checks":    "bypassed",
+		}).Info("🪙 Token-based trading enabled")
+	} else {
+		a.logger.WithFields(map[string]interface{}{
+			"buy_amount_sol": a.config.Trading.BuyAmountSOL,
+			"trading_mode":   "sol_based",
+			"balance_checks": "enabled",
+		}).Info("💰 SOL-based trading enabled")
+	}
 	// Test connections and start components...
 	if err := a.testConnections(); err != nil {
 		return fmt.Errorf("connection test failed: %w", err)
@@ -631,7 +681,6 @@ func (a *App) logUltraFastStats() {
 
 	a.logger.WithFields(stats).Info("⚡⚡ Ultra-Fast Performance Statistics (with Auto-Sell)")
 }
-
 func (a *App) logStandardStats() {
 	// Standard statistics logging (existing implementation)
 	a.logger.Info("📊 Standard Statistics")

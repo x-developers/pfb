@@ -7,14 +7,18 @@ rpc_api_key: "${PUMPBOT_RPC_API_KEY:-}"
 # Wallet settings (REQUIRED)
 private_key: "${PUMPBOT_PRIVATE_KEY}"
 
-# Trading settings
 trading:
   buy_amount_sol: ${PUMPBOT_TRADING_BUY_AMOUNT_SOL:-0.01}
+  buy_amount_tokens: ${PUMPBOT_TRADING_BUY_AMOUNT_TOKENS:-1000000}
+  use_token_amount: ${PUMPBOT_TRADING_USE_TOKEN_AMOUNT:-true}
   slippage_bp: ${PUMPBOT_TRADING_SLIPPAGE_BP:-500}
   priority_fee: ${PUMPBOT_TRADING_PRIORITY_FEE:-0}
   auto_sell: ${PUMPBOT_TRADING_AUTO_SELL:-true}
-  sell_delay_seconds: ${PUMPBOT_TRADING_SELL_DELAY_SECONDS:-1}
+  sell_delay_ms: ${PUMPBOT_TRADING_SELL_DELAY_MS:-1000}
   sell_percentage: ${PUMPBOT_TRADING_SELL_PERCENTAGE:-100.0}
+  close_ata_after_sell: ${PUMPBOT_TRADING_CLOSE_ATA_AFTER_SELL:-true}
+
+  # Timing controls
   max_token_age_ms: ${PUMPBOT_TRADING_MAX_TOKEN_AGE_MS:-5000}
   min_discovery_delay_ms: ${PUMPBOT_TRADING_MIN_DISCOVERY_DELAY_MS:-100}
 
@@ -90,79 +94,60 @@ advanced:
   metrics_port: ${PUMPBOT_ADVANCED_METRICS_PORT:-8080}
 
 # ========================================
-# 🚀 ULTRA-FAST CONFIGURATION EXAMPLES
+# 🚀 NEW TRADING MODES EXAMPLES
 # ========================================
 
-# 💀 MAXIMUM SPEED (EXTREMELY RISKY):
-# export PUMPBOT_ULTRA_FAST_SKIP_VALIDATION="true"
-# export PUMPBOT_ULTRA_FAST_FIRE_AND_FORGET="true"
-# export PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS="5"
-# export PUMPBOT_ULTRA_FAST_PRIORITY_OVER_SAFETY="true"
-# export PUMPBOT_STRATEGY_YOLO_MODE="true"
+# 🔰 TRADITIONAL SOL-BASED (Conservative):
+# export PUMPBOT_TRADING_USE_TOKEN_AMOUNT="false"
+# export PUMPBOT_TRADING_BUY_AMOUNT_SOL="0.01"
+# export PUMPBOT_TRADING_AUTO_SELL="true"
+# export PUMPBOT_TRADING_SELL_DELAY_MS="2000"
 
-# ⚡ BALANCED ULTRA-FAST (RECOMMENDED):
-# export PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS="3"
-# export PUMPBOT_ULTRA_FAST_CACHE_BLOCKHASH="true"
-# export PUMPBOT_ULTRA_FAST_PRECOMPUTE_INSTRUCTIONS="true"
-# export PUMPBOT_ULTRA_FAST_LOG_LATENCY="true"
+# ⚡ TOKEN-BASED ULTRA-FAST (Bypass Balance Checks):
+# export PUMPBOT_TRADING_USE_TOKEN_AMOUNT="true"
+# export PUMPBOT_TRADING_BUY_AMOUNT_TOKENS="5000000"
+# export PUMPBOT_TRADING_AUTO_SELL="true"
+# export PUMPBOT_TRADING_SELL_DELAY_MS="500"
 
-# 🛡️ ULTRA-FAST + MEV PROTECTION:
+# 🛡️ TOKEN-BASED + MEV PROTECTION:
+# export PUMPBOT_TRADING_USE_TOKEN_AMOUNT="true"
+# export PUMPBOT_TRADING_BUY_AMOUNT_TOKENS="3000000"
 # export PUMPBOT_JITO_ENABLED="true"
 # export PUMPBOT_JITO_USE_FOR_TRADING="true"
-# export PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS="3"
+# export PUMPBOT_TRADING_SELL_DELAY_MS="1000"
 
-# 🔧 DEVELOPMENT/TESTING ULTRA-FAST:
-# export PUMPBOT_ULTRA_FAST_BENCHMARK_MODE="true"
-# export PUMPBOT_ULTRA_FAST_LOG_LATENCY="true"
-# export PUMPBOT_NETWORK="devnet"
-
-# ========================================
-# ⚡⚡ QUICK COMMANDS FOR ULTRA-FAST MODE
-# ========================================
-
-# Test ultra-fast mode on devnet:
-# ./build/pump-fun-bot --network devnet --dry-run --log-latency
-
-# Ultra-fast with MEV protection:
-# ./build/pump-fun-bot --jito --network mainnet
-
-# Maximum speed (DANGEROUS):
-# ./build/pump-fun-bot --skip-validation --fire-and-forget --parallel-workers 5
-
-# Benchmark mode:
-# ./build/pump-fun-bot --benchmark --log-latency --network devnet
+# 💀 MAXIMUM SPEED (EXTREMELY RISKY):
+# export PUMPBOT_TRADING_USE_TOKEN_AMOUNT="true"
+# export PUMPBOT_TRADING_BUY_AMOUNT_TOKENS="10000000"
+# export PUMPBOT_TRADING_SELL_DELAY_MS="100"
+# export PUMPBOT_ULTRA_FAST_SKIP_VALIDATION="true"
+# export PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS="5"
 
 # ========================================
-# 📊 EXPECTED PERFORMANCE IMPROVEMENTS
+# 📊 TIMING RECOMMENDATIONS
 # ========================================
 
-# Ultra-Fast Single:  Discovery → Execution: 20-100ms
-# Ultra-Fast Parallel: Discovery → Execution: 5-50ms
-# Maximum Speed Mode: Discovery → Execution: 2-20ms
+# SELL_DELAY_MS recommendations:
+# 100-200ms:  Ultra-aggressive (very risky, might front-run yourself)
+# 500-1000ms: Very fast (good for volatile tokens)
+# 1000-2000ms: Fast (1-2 seconds, balanced)
+# 3000-5000ms: Conservative (3-5 seconds, safer)
+# 10000ms+:   Very conservative (10+ seconds)
 
-# Parallel Workers Performance:
-# 1 worker:  1x speed (baseline)
-# 3 workers: 2.5x speed (recommended)
-# 5 workers: 3.5x speed (optimal for most setups)
-# 10 workers: 4x speed (marginal gains, higher resource usage)
+# TOKEN_AMOUNT considerations:
+# - Most tokens have 6-9 decimals
+# - 1000000 = 1 token if 6 decimals
+# - 5000000 = 5 tokens if 6 decimals
+# - Check token decimals before setting amount
+# - Token-based trading bypasses wallet balance checks
 
 # ========================================
-# ⚠️ ULTRA-FAST MODE WARNINGS
+# ⚠️ WARNINGS FOR NEW FEATURES
 # ========================================
 
-# ⚠️ This bot operates in ultra-fast mode by default
-# ⚠️ skip_validation can lead to failed transactions
-# ⚠️ fire_and_forget doesn't wait for confirmation
-# ⚠️ parallel_workers increases resource usage
-# ⚠️ priority_over_safety is EXTREMELY DANGEROUS
-# ⚠️ Always test on devnet first!
-# ⚠️ Monitor your wallet balance closely
-# ⚠️ Set reasonable rate limits (max_tokens_per_second)
-
-# 💡 OPTIMIZATION TIPS:
-# - Start with 3 parallel workers and tune based on performance
-# - Enable latency logging to identify bottlenecks
-# - Use benchmark mode for testing optimal settings
-# - Combine with Jito for speed + MEV protection
-# - Monitor success rates vs speed improvements
-# - Adjust RPC timeout based on your connection
+# ⚠️ Auto-sell is now ENABLED BY DEFAULT
+# ⚠️ Sell delay is now in MILLISECONDS (was seconds)
+# ⚠️ Token-based trading bypasses balance validation
+# ⚠️ Very short sell delays (100-200ms) are extremely risky
+# ⚠️ Always test on devnet first with small amounts
+# ⚠️ Monitor your trades closely with auto-sell enabled

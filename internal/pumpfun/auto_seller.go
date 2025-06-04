@@ -87,7 +87,7 @@ func (as *AutoSeller) ScheduleAutoSell(request AutoSellRequest) {
 	go as.executeAutoSell(request)
 }
 
-// executeAutoSell executes the auto-sell operation with timing
+// executeAutoSell executes the auto-sell operation with millisecond timing
 func (as *AutoSeller) executeAutoSell(request AutoSellRequest) {
 	startTime := time.Now()
 
@@ -99,10 +99,13 @@ func (as *AutoSeller) executeAutoSell(request AutoSellRequest) {
 		"use_jito":        as.useJito,
 	}).Info("🕒 Scheduling auto-sell operation")
 
-	// Apply delay if specified
+	// Apply delay if specified (now in milliseconds)
 	if request.DelayMs > 0 {
-		delayDuration := time.Duration(request.DelayMs) * time.Millisecond
-		as.logger.WithField("delay", delayDuration).Info("⏳ Waiting before auto-sell...")
+		delayDuration := time.Duration(request.DelayMs) * time.Millisecond // CHANGED: already in milliseconds
+		as.logger.WithFields(map[string]interface{}{
+			"delay_ms":       request.DelayMs,
+			"delay_duration": delayDuration,
+		}).Info("⏳ Waiting before auto-sell...")
 		time.Sleep(delayDuration)
 	}
 
@@ -136,12 +139,17 @@ func (as *AutoSeller) performAutoSell(request AutoSellRequest, startTime time.Ti
 
 	as.logger.WithField("ata_address", ataAddress.String()).Debug("🏦 ATA address obtained")
 
-	// Step 2: Get token balance to determine how much to sell
-	tokenBalance, err := as.getTokenBalance(ctx, ataAddress)
-	if err != nil {
-		result.Error = fmt.Sprintf("failed to get token balance: %v", err)
-		result.TotalTime = time.Since(startTime)
-		return result
+	var tokenBalance uint64
+	if as.config.IsTokenBasedTrading() {
+		tokenBalance = as.config.Trading.BuyAmountTokens
+	} else {
+		balance, err := as.getTokenBalance(ctx, ataAddress)
+		if err != nil {
+			result.Error = fmt.Sprintf("failed to get token balance: %v", err)
+			result.TotalTime = time.Since(startTime)
+			return result
+		}
+		tokenBalance = balance
 	}
 
 	if tokenBalance == 0 {
@@ -451,7 +459,7 @@ func (as *AutoSeller) executeSellRegular(ctx context.Context, instructions []typ
 	return signature, nil
 }
 
-// Enhanced configuration for auto-sell
+// Enhanced configuration for auto-sell with milliseconds
 func (as *AutoSeller) UpdateConfig(config *config.Config) {
 	as.config = config
 	as.enabled = config.Trading.AutoSell
@@ -460,8 +468,9 @@ func (as *AutoSeller) UpdateConfig(config *config.Config) {
 	as.logger.WithFields(map[string]interface{}{
 		"auto_sell_enabled": as.enabled,
 		"use_jito":          as.useJito,
-		"sell_delay_sec":    config.Trading.SellDelaySeconds,
+		"sell_delay_ms":     config.Trading.SellDelayMs,
 		"sell_percentage":   config.Trading.SellPercentage,
+		"token_based":       config.IsTokenBasedTrading(),
 	}).Info("🔄 Auto-sell configuration updated")
 }
 
@@ -596,7 +605,7 @@ func (as *AutoSeller) GetStats() map[string]interface{} {
 	return map[string]interface{}{
 		"enabled":         as.enabled,
 		"use_jito":        as.useJito,
-		"sell_delay":      as.config.Trading.SellDelaySeconds,
+		"sell_delay":      as.config.Trading.SellDelayMs,
 		"sell_percentage": as.config.Trading.SellPercentage,
 	}
 }
