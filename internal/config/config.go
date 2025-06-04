@@ -44,17 +44,22 @@ type Config struct {
 
 // TradingConfig contains trading-related settings
 type TradingConfig struct {
-	BuyAmountSOL        float64 `mapstructure:"buy_amount_sol" yaml:"buy_amount_sol"`
-	SlippageBP          int     `mapstructure:"slippage_bp" yaml:"slippage_bp"`
-	MaxGasPrice         uint64  `mapstructure:"max_gas_price" yaml:"max_gas_price"`
-	PriorityFee         uint64  `mapstructure:"priority_fee" yaml:"priority_fee"`
-	AutoSell            bool    `mapstructure:"auto_sell" yaml:"auto_sell"`
-	SellDelaySeconds    int     `mapstructure:"sell_delay_seconds" yaml:"sell_delay_seconds"`
-	SellPercentage      float64 `mapstructure:"sell_percentage" yaml:"sell_percentage"`
+	BuyAmountSOL float64 `mapstructure:"buy_amount_sol" yaml:"buy_amount_sol"`
+	SlippageBP   int     `mapstructure:"slippage_bp" yaml:"slippage_bp"`
+	MaxGasPrice  uint64  `mapstructure:"max_gas_price" yaml:"max_gas_price"`
+	PriorityFee  uint64  `mapstructure:"priority_fee" yaml:"priority_fee"`
+
+	// Auto-sell settings
+	AutoSell          bool    `mapstructure:"auto_sell" yaml:"auto_sell"`
+	SellDelaySeconds  int     `mapstructure:"sell_delay_seconds" yaml:"sell_delay_seconds"`
+	SellPercentage    float64 `mapstructure:"sell_percentage" yaml:"sell_percentage"`
+	CloseATAAfterSell bool    `mapstructure:"close_ata_after_sell" yaml:"close_ata_after_sell"`
+
+	// Existing fields
 	TakeProfitPercent   float64 `mapstructure:"take_profit_percent" yaml:"take_profit_percent"`
 	StopLossPercent     float64 `mapstructure:"stop_loss_percent" yaml:"stop_loss_percent"`
-	MaxTokenAgeMs       int64   `mapstructure:"max_token_age_ms" yaml:"max_token_age_ms"`             // NEW: максимальный возраст токена в мс
-	MinDiscoveryDelayMs int64   `mapstructure:"min_discovery_delay_ms" yaml:"min_discovery_delay_ms"` // NEW: минимальная задержка после обнаружения
+	MaxTokenAgeMs       int64   `mapstructure:"max_token_age_ms" yaml:"max_token_age_ms"`
+	MinDiscoveryDelayMs int64   `mapstructure:"min_discovery_delay_ms" yaml:"min_discovery_delay_ms"`
 }
 
 // JitoConfig contains JITO-related settings
@@ -351,6 +356,11 @@ func bindEnvVariables() {
 	viper.BindEnv("logging.level", "PUMPBOT_LOGGING_LEVEL")
 	viper.BindEnv("logging.format", "PUMPBOT_LOGGING_FORMAT")
 	viper.BindEnv("logging.log_to_file", "PUMPBOT_LOGGING_LOG_TO_FILE")
+
+	viper.BindEnv("trading.auto_sell", "PUMPBOT_TRADING_AUTO_SELL")
+	viper.BindEnv("trading.sell_delay_seconds", "PUMPBOT_TRADING_SELL_DELAY_SECONDS")
+	viper.BindEnv("trading.sell_percentage", "PUMPBOT_TRADING_SELL_PERCENTAGE")
+	viper.BindEnv("trading.close_ata_after_sell", "PUMPBOT_TRADING_CLOSE_ATA_AFTER_SELL")
 }
 
 // overrideWithEnvVars directly reads environment variables to ensure they override everything
@@ -587,6 +597,12 @@ func setDefaults() {
 	viper.SetDefault("extreme_fast.jito_tip_amount", 10000)
 	viper.SetDefault("extreme_fast.max_slippage_bp", 2000)
 	viper.SetDefault("extreme_fast.target_confirmation_time", 4)
+
+	// Auto-sell defaults
+	viper.SetDefault("trading.auto_sell", false)
+	viper.SetDefault("trading.sell_delay_seconds", 30)
+	viper.SetDefault("trading.sell_percentage", 100.0)
+	viper.SetDefault("trading.close_ata_after_sell", true)
 }
 
 // validateConfig validates the configuration
@@ -646,29 +662,43 @@ func validateConfig(config *Config) error {
 		return fmt.Errorf("failed to create trade log directory %s: %w", config.Logging.TradeLogDir, err)
 	}
 
-	if config.UltraFast.Enabled {
-		// Safety checks for ultra-fast mode
-		if config.UltraFast.ParallelWorkers > 10 {
-			return fmt.Errorf("ultra_fast.parallel_workers must not exceed 10 (got %d)", config.UltraFast.ParallelWorkers)
+	// Safety checks for ultra-fast mode
+	if config.UltraFast.ParallelWorkers > 10 {
+		return fmt.Errorf("ultra_fast.parallel_workers must not exceed 10 (got %d)", config.UltraFast.ParallelWorkers)
+	}
+
+	if config.UltraFast.MaxTokensPerSecond > 100 {
+		return fmt.Errorf("ultra_fast.max_tokens_per_second must not exceed 100 (got %d)", config.UltraFast.MaxTokensPerSecond)
+	}
+
+	if config.UltraFast.PriorityOverSafety {
+		// Warn about extremely dangerous mode
+		fmt.Println("⚠️ WARNING: Priority over safety mode enabled - this is extremely risky!")
+	}
+
+	if config.UltraFast.FireAndForget && !config.UltraFast.NoConfirmation {
+		// Auto-enable no confirmation for fire and forget
+		config.UltraFast.NoConfirmation = true
+	}
+
+	// Ensure minimum safety measures in ultra-fast mode
+	if config.Trading.BuyAmountSOL > 1.0 && config.UltraFast.SkipValidation {
+		return fmt.Errorf("buy amount too high for ultra-fast mode with skip validation: %.3f SOL", config.Trading.BuyAmountSOL)
+	}
+
+	// Validate auto-sell settings
+	if config.Trading.AutoSell {
+		if config.Strategy.HoldOnly {
+			config.Trading.AutoSell = false
+			fmt.Println("Warning: Auto-sell disabled because hold-only mode is enabled")
 		}
 
-		if config.UltraFast.MaxTokensPerSecond > 100 {
-			return fmt.Errorf("ultra_fast.max_tokens_per_second must not exceed 100 (got %d)", config.UltraFast.MaxTokensPerSecond)
+		if config.Trading.SellPercentage <= 0 || config.Trading.SellPercentage > 100 {
+			return fmt.Errorf("sell_percentage must be between 1 and 100, got %.1f", config.Trading.SellPercentage)
 		}
 
-		if config.UltraFast.PriorityOverSafety {
-			// Warn about extremely dangerous mode
-			fmt.Println("⚠️ WARNING: Priority over safety mode enabled - this is extremely risky!")
-		}
-
-		if config.UltraFast.FireAndForget && !config.UltraFast.NoConfirmation {
-			// Auto-enable no confirmation for fire and forget
-			config.UltraFast.NoConfirmation = true
-		}
-
-		// Ensure minimum safety measures in ultra-fast mode
-		if config.Trading.BuyAmountSOL > 1.0 && config.UltraFast.SkipValidation {
-			return fmt.Errorf("buy amount too high for ultra-fast mode with skip validation: %.3f SOL", config.Trading.BuyAmountSOL)
+		if config.Trading.SellDelaySeconds < 0 {
+			return fmt.Errorf("sell_delay_seconds cannot be negative, got %d", config.Trading.SellDelaySeconds)
 		}
 	}
 
@@ -694,7 +724,7 @@ func GetConfigFromEnv(envPath string) *Config {
 			BuyAmountSOL:        getEnvFloat("PUMPBOT_TRADING_BUY_AMOUNT_SOL", DefaultBuyAmountSOL),
 			SlippageBP:          getEnvInt("PUMPBOT_TRADING_SLIPPAGE_BP", DefaultSlippageBP),
 			AutoSell:            getEnvBool("PUMPBOT_TRADING_AUTO_SELL", false),
-			SellDelaySeconds:    getEnvInt("PUMPBOT_TRADING_SELL_DELAY_SECONDS", 30),
+			SellDelaySeconds:    getEnvInt("PUMPBOT_TRADING_SELL_DELAY_SECONDS", 1),
 			SellPercentage:      getEnvFloat("PUMPBOT_TRADING_SELL_PERCENTAGE", 100.0),
 			TakeProfitPercent:   getEnvFloat("PUMPBOT_TRADING_TAKE_PROFIT_PERCENT", 50.0),
 			StopLossPercent:     getEnvFloat("PUMPBOT_TRADING_STOP_LOSS_PERCENT", -20.0),

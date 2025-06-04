@@ -12,8 +12,8 @@ trading:
   buy_amount_sol: ${PUMPBOT_TRADING_BUY_AMOUNT_SOL:-0.01}
   slippage_bp: ${PUMPBOT_TRADING_SLIPPAGE_BP:-500}
   priority_fee: ${PUMPBOT_TRADING_PRIORITY_FEE:-0}
-  auto_sell: ${PUMPBOT_TRADING_AUTO_SELL:-false}
-  sell_delay_seconds: ${PUMPBOT_TRADING_SELL_DELAY_SECONDS:-30}
+  auto_sell: ${PUMPBOT_TRADING_AUTO_SELL:-true}
+  sell_delay_seconds: ${PUMPBOT_TRADING_SELL_DELAY_SECONDS:-1}
   sell_percentage: ${PUMPBOT_TRADING_SELL_PERCENTAGE:-100.0}
   max_token_age_ms: ${PUMPBOT_TRADING_MAX_TOKEN_AGE_MS:-5000}
   min_discovery_delay_ms: ${PUMPBOT_TRADING_MIN_DISCOVERY_DELAY_MS:-100}

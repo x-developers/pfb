@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"strings"
@@ -21,14 +22,18 @@ const Version = "1.5.0"
 
 // CLI flags
 var (
-	yoloMode     = flag.Bool("yolo", false, "Enable YOLO mode (continuous trading)")
-	holdOnly     = flag.Bool("hold", false, "Hold only mode (no selling)")
-	matchPattern = flag.String("match", "", "Filter tokens by name pattern")
-	network      = flag.String("network", "", "Network to use (mainnet/devnet)")
-	logLevel     = flag.String("log-level", "", "Log level (debug/info/warn/error)")
-	dryRun       = flag.Bool("dry-run", false, "Dry run mode (no actual trades)")
-	configFile   = flag.String("config", "", "Path to config file")
-	envFile      = flag.String("env", "", "Path to .env file")
+	yoloMode       = flag.Bool("yolo", false, "Enable YOLO mode (continuous trading)")
+	holdOnly       = flag.Bool("hold", false, "Hold only mode (no selling)")
+	autoSell       = flag.Bool("auto-sell", false, "Enable automatic selling after purchase")
+	sellDelay      = flag.Int("sell-delay", 30, "Delay before auto-sell in seconds")
+	sellPercentage = flag.Float64("sell-percentage", 100.0, "Percentage of tokens to sell (100 = all)")
+	closeATA       = flag.Bool("close-ata", true, "Close ATA account after selling to reclaim rent")
+	matchPattern   = flag.String("match", "", "Filter tokens by name pattern")
+	network        = flag.String("network", "", "Network to use (mainnet/devnet)")
+	logLevel       = flag.String("log-level", "", "Log level (debug/info/warn/error)")
+	dryRun         = flag.Bool("dry-run", false, "Dry run mode (no actual trades)")
+	configFile     = flag.String("config", "", "Path to config file")
+	envFile        = flag.String("env", "", "Path to .env file")
 
 	// Jito flags
 	enableJito   = flag.Bool("jito", false, "Enable Jito MEV protection")
@@ -114,6 +119,7 @@ func loadConfigurationWithOverrides() *config.Config {
 	return cfg
 }
 
+// Updated applyCliOverrides function
 func applyCliOverrides(cfg *config.Config) {
 	// Basic overrides
 	if *network != "" {
@@ -122,9 +128,27 @@ func applyCliOverrides(cfg *config.Config) {
 	if *yoloMode {
 		cfg.Strategy.YoloMode = true
 	}
+	if *holdOnly {
+		cfg.Strategy.HoldOnly = true
+		cfg.Trading.AutoSell = false // Disable auto-sell in hold mode
+	}
 	if *enableJito {
 		cfg.JITO.Enabled = true
 		cfg.JITO.UseForTrading = true
+	}
+
+	// Auto-sell overrides
+	if *autoSell {
+		cfg.Trading.AutoSell = true
+	}
+	if *sellDelay != 30 {
+		cfg.Trading.SellDelaySeconds = *sellDelay
+	}
+	if *sellPercentage != 100.0 {
+		cfg.Trading.SellPercentage = *sellPercentage
+	}
+	if !*closeATA {
+		cfg.Trading.CloseATAAfterSell = false
 	}
 
 	// Ultra-Fast Mode is always enabled, but we can configure it
@@ -136,26 +160,15 @@ func applyCliOverrides(cfg *config.Config) {
 		cfg.Strategy.YoloMode = true // YOLO mode implies skip validation
 	}
 
-	if *noConfirmation {
-		cfg.UltraFast.NoConfirmation = true
+	// Auto-sell validation
+	if cfg.Trading.AutoSell && cfg.Strategy.HoldOnly {
+		log.Println("Warning: Auto-sell disabled because hold-only mode is enabled")
+		cfg.Trading.AutoSell = false
 	}
 
-	if *parallelWorkers > 1 {
-		cfg.UltraFast.ParallelWorkers = *parallelWorkers
-	}
-
-	if *fireAndForget {
-		cfg.UltraFast.FireAndForget = true
-		cfg.UltraFast.NoConfirmation = true
-	}
-
-	if *benchmark {
-		cfg.UltraFast.BenchmarkMode = true
-		cfg.Logging.Level = "debug"
-	}
-
-	if *logLatency {
-		cfg.UltraFast.LogLatency = true
+	if cfg.Trading.SellPercentage <= 0 || cfg.Trading.SellPercentage > 100 {
+		log.Printf("Warning: Invalid sell percentage %.1f%%, using default 100%%", cfg.Trading.SellPercentage)
+		cfg.Trading.SellPercentage = 100.0
 	}
 }
 
@@ -267,13 +280,38 @@ func createTrader(
 	tradeLogger *logger.TradeLogger,
 ) pumpfun.TraderInterface {
 
-	log.Info("⚡⚡ Creating Ultra-Fast trader")
+	var traderType string
+	if cfg.Trading.AutoSell {
+		traderType = "ULTRA-FAST + AUTO-SELL"
+	} else {
+		traderType = "ULTRA-FAST"
+	}
+
+	log.WithFields(map[string]interface{}{
+		"auto_sell_enabled": cfg.Trading.AutoSell,
+		"sell_delay_sec":    cfg.Trading.SellDelaySeconds,
+		"sell_percentage":   cfg.Trading.SellPercentage,
+		"close_ata":         cfg.Trading.CloseATAAfterSell,
+	}).Info("⚡⚡ Creating " + traderType + " trader")
+
 	baseTrader := pumpfun.NewTrader(wallet, solanaClient, log, cfg)
+
+	// Set trade logger for auto-sell functionality
+	if tradeLogger != nil {
+		baseTrader.SetTradeLogger(tradeLogger)
+	}
 
 	// Wrap with Jito protection if enabled
 	if cfg.JITO.Enabled && cfg.JITO.UseForTrading {
 		log.Info("🛡️ Wrapping trader with Jito MEV protection")
-		return pumpfun.NewJitoTrader(baseTrader, jitoClient, wallet, log, cfg)
+		jitoTrader := pumpfun.NewJitoTrader(baseTrader, jitoClient, wallet, log, cfg)
+
+		// Set Jito client for auto-sell functionality
+		if baseTrader.GetAutoSeller() != nil {
+			baseTrader.SetJitoClient(jitoClient)
+		}
+
+		return jitoTrader
 	}
 
 	return baseTrader
@@ -290,7 +328,23 @@ func (a *App) Start() error {
 		mode += " + JITO PROTECTED"
 	}
 
+	if a.config.Trading.AutoSell {
+		mode += " + AUTO-SELL"
+	}
+
 	a.logger.Info(fmt.Sprintf("🚀 Starting Pump.fun Bot v%s (%s MODE)", Version, mode))
+
+	// Log auto-sell configuration
+	if a.config.Trading.AutoSell {
+		a.logger.WithFields(map[string]interface{}{
+			"sell_delay_sec":    a.config.Trading.SellDelaySeconds,
+			"sell_percentage":   a.config.Trading.SellPercentage,
+			"close_ata":         a.config.Trading.CloseATAAfterSell,
+			"auto_sell_enabled": true,
+		}).Info("🤖 Auto-sell configuration active")
+	} else {
+		a.logger.Info("🚫 Auto-sell is disabled - tokens will be held")
+	}
 
 	// Test connections and start components...
 	if err := a.testConnections(); err != nil {
@@ -327,6 +381,10 @@ func (a *App) Start() error {
 
 	a.logger.Info("🎯 Bot started - listening for new tokens!")
 	a.logger.Info("⚡⚡ ULTRA-FAST MODE ACTIVE - Maximum speed processing enabled!")
+
+	if a.config.Trading.AutoSell {
+		a.logger.Info("🤖 AUTO-SELL MODE ACTIVE - Tokens will be automatically sold!")
+	}
 
 	// Wait for shutdown
 	select {
@@ -548,7 +606,7 @@ func (a *App) runStandardMode() error {
 	}
 }
 
-// logUltraFastStats logs detailed performance statistics
+// Enhanced logUltraFastStats with auto-sell statistics
 func (a *App) logUltraFastStats() {
 	stats := map[string]interface{}{
 		"tokens_discovered":     a.processingStats.TokensDiscovered,
@@ -558,7 +616,7 @@ func (a *App) logUltraFastStats() {
 		"workers":               len(a.tokenWorkers),
 	}
 
-	// Add trader stats
+	// Add trader stats including auto-sell
 	if a.trader != nil {
 		traderStats := a.trader.GetTradingStats()
 		for k, v := range traderStats {
@@ -571,7 +629,7 @@ func (a *App) logUltraFastStats() {
 		stats[fmt.Sprintf("worker_%d_avg_ms", workerID)] = utilization
 	}
 
-	a.logger.WithFields(stats).Info("⚡⚡ Ultra-Fast Performance Statistics")
+	a.logger.WithFields(stats).Info("⚡⚡ Ultra-Fast Performance Statistics (with Auto-Sell)")
 }
 
 func (a *App) logStandardStats() {
