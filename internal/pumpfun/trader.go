@@ -2,9 +2,11 @@
 package pumpfun
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/blocto/solana-go-sdk/program/associated_token_account"
 	"sync"
 	"time"
 
@@ -49,6 +51,7 @@ type Trader struct {
 	rejectedByTiming int64
 	staleTokens      int64
 	startTime        time.Time
+	lastTradeTime    time.Time
 }
 
 func NewTrader(
@@ -103,6 +106,14 @@ func (t *Trader) SetTradeLogger(tradeLogger *logger.TradeLogger) {
 
 // ShouldBuyToken - минимальные проверки для скорости с добавлением проверки возраста токена
 func (t *Trader) ShouldBuyToken(ctx context.Context, tokenEvent *TokenEvent) (bool, string) {
+	// Check if we're respecting the max tokens per hour limit
+	if t.config.Strategy.MaxTokensPerHour > 0 {
+		hourAgo := time.Now().Add(-time.Hour)
+		if t.lastTradeTime.After(hourAgo) && t.successfulTrades >= t.config.Strategy.MaxTokensPerHour {
+			return false, "max tokens per hour limit reached"
+		}
+	}
+
 	// Log the timing analysis for ultra-fast mode
 	age := tokenEvent.GetAge()
 	timeSinceDiscovery := time.Since(tokenEvent.DiscoveredAt)
@@ -233,11 +244,15 @@ func (t *Trader) executeUltraFastBuy(ctx context.Context, tokenEvent *TokenEvent
 
 	blockhash := t.getCachedBlockhash()
 	if blockhash == "" {
-		return &TradeResult{
-			Success:   false,
-			Error:     fmt.Sprintf("Empty cached blockhash queue. Skipping..."),
-			TradeTime: time.Since(startTime).Milliseconds(),
-		}, fmt.Errorf("Empty cached blockhash queue. Skipping...")
+		_blockhash, _ := t.rpcClient.GetLatestBlockhash(ctx)
+		blockhash = _blockhash
+
+		//
+		//return &TradeResult{
+		//	Success:   false,
+		//	Error:     fmt.Sprintf("Empty cached blockhash queue. Skipping..."),
+		//	TradeTime: time.Since(startTime).Milliseconds(),
+		//}, fmt.Errorf("Empty cached blockhash queue. Skipping...")
 	}
 
 	transaction, err := types.NewTransaction(types.NewTransactionParam{
@@ -313,20 +328,39 @@ func (t *Trader) executeUltraFastBuy(ctx context.Context, tokenEvent *TokenEvent
 
 // NEW: createFastInstructionsWithTokenSupport - быстрое создание инструкций с поддержкой токенов
 func (t *Trader) createFastInstructionsWithTokenSupport(tokenEvent *TokenEvent) []types.Instruction {
-	instructions := make([]types.Instruction, 0, 3)
+	instructions := make([]types.Instruction, 0, 4)
 
 	// Добавляем pre-computed инструкции
-	if t.config.Trading.PriorityFee > 0 {
-		instructions = append(instructions, t.priorityFeeInstruction)
-	}
+	//if t.config.Trading.PriorityFee > 0 {
+	//	instructions = append(instructions, t.priorityFeeInstruction)
+	//}
+	//instructions = append(instructions, t.computeBudgetInstruction)
 
-	instructions = append(instructions, t.computeBudgetInstruction)
+	//params := &associated_token_account.CreateIdempotentParam{
+	//	Funder: t.wallet.GetPublicKey(),
+	//	Owner:  t.wallet.GetPublicKey(),
+	//	Mint:   *tokenEvent.Mint,
+	//	//AssociatedTokenAccount: common.PublicKey{},
+	//}
+	ataInstruction := t.createIdempotentAssociatedInstruction(tokenEvent)
+	instructions = append(instructions, ataInstruction)
 
-	// Создаем buy инструкцию с поддержкой токенов
 	buyInstruction := t.createBuyInstructionWithTokenSupport(tokenEvent)
 	instructions = append(instructions, buyInstruction)
 
 	return instructions
+}
+
+func (t *Trader) createIdempotentAssociatedInstruction(tokenEvent *TokenEvent) types.Instruction {
+	userATA, _ := t.wallet.GetAssociatedTokenAddress(*tokenEvent.Mint)
+	params := &associated_token_account.CreateIdempotentParam{
+		Funder:                 t.wallet.GetPublicKey(),
+		Owner:                  t.wallet.GetPublicKey(),
+		Mint:                   *tokenEvent.Mint,
+		AssociatedTokenAccount: userATA,
+	}
+
+	return associated_token_account.CreateIdempotent(*params)
 }
 
 // NEW: createBuyInstructionWithTokenSupport - создание buy инструкции с поддержкой токенов
@@ -346,7 +380,7 @@ func (t *Trader) createBuyInstructionWithTokenSupport(tokenEvent *TokenEvent) ty
 			{PubKey: t.wallet.GetPublicKey(), IsSigner: true, IsWritable: true},
 			{PubKey: common.SystemProgramID, IsSigner: false, IsWritable: false},
 			{PubKey: common.TokenProgramID, IsSigner: false, IsWritable: false},
-			{PubKey: common.PublicKeyFromBytes(config.RentProgramID), IsSigner: false, IsWritable: false},
+			{PubKey: *tokenEvent.CreatorVault, IsSigner: false, IsWritable: true},
 			{PubKey: common.PublicKeyFromBytes(config.PumpFunEventAuthority), IsSigner: false, IsWritable: false},
 			{PubKey: common.PublicKeyFromBytes(config.PumpFunProgramID), IsSigner: false, IsWritable: false},
 		},
@@ -354,10 +388,7 @@ func (t *Trader) createBuyInstructionWithTokenSupport(tokenEvent *TokenEvent) ty
 	}
 }
 
-// NEW: createBuyInstructionDataWithTokenSupport - данные для buy инструкции с поддержкой токенов
 func (t *Trader) createBuyInstructionDataWithTokenSupport() []byte {
-	discriminator := []byte{0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea}
-
 	var tokenAmount uint64
 	var maxSolCost uint64
 
@@ -374,10 +405,21 @@ func (t *Trader) createBuyInstructionDataWithTokenSupport() []byte {
 		maxSolCost = uint64(float64(buyAmountLamports) * slippageFactor)
 	}
 
-	data := make([]byte, 24)
-	copy(data[0:8], discriminator)
-	binary.LittleEndian.PutUint64(data[8:16], tokenAmount)
-	binary.LittleEndian.PutUint64(data[16:24], maxSolCost)
+	// аналог struct.pack("<Q", 16927863322537952870)
+	var expectedDiscriminator bytes.Buffer
+	binary.Write(&expectedDiscriminator, binary.LittleEndian, uint64(16927863322537952870))
+
+	// аналог struct.pack("<Q", token_amount_raw)
+	var tokenAmountBytes bytes.Buffer
+	binary.Write(&tokenAmountBytes, binary.LittleEndian, tokenAmount)
+
+	// аналог struct.pack("<Q", max_amount_lamports)
+	var maxAmountBytes bytes.Buffer
+	binary.Write(&maxAmountBytes, binary.LittleEndian, maxSolCost)
+
+	// аналог EXPECTED_DISCRIMINATOR + token_amount_bytes + max_amount_bytes
+	data := append(expectedDiscriminator.Bytes(), tokenAmountBytes.Bytes()...)
+	data = append(data, maxAmountBytes.Bytes()...)
 
 	return data
 }
@@ -514,6 +556,7 @@ func (t *Trader) blockhashUpdater() {
 // Статистика и мониторинг
 func (t *Trader) updateStatistics(startTime time.Time, success bool) {
 	tradeTime := time.Since(startTime)
+	t.lastTradeTime = time.Now()
 
 	t.totalTrades++
 	if success {

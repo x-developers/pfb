@@ -37,13 +37,13 @@ var (
 	PumpFunGlobal = mustDecodeBase58("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf")
 
 	// Fee recipient (verified)
-	PumpFunFeeRecipient = mustDecodeBase58("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV2Sg93gAmRBBBPNk")
+	PumpFunFeeRecipient = mustDecodeBase58("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
 
 	// Event authority (verified)
 	PumpFunEventAuthority = mustDecodeBase58("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
 
 	// System program
-	SystemProgramID = mustDecodeBase58("11111111111111111111111111111112")
+	SystemProgramID = mustDecodeBase58("11111111111111111111111111111111")
 
 	// Token program
 	TokenProgramID = mustDecodeBase58("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")

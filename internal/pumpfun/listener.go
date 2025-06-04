@@ -192,13 +192,16 @@ func (l *Listener) handleLogsNotification(data interface{}) error {
 
 	// Enhanced logging with timing information
 	l.logger.WithFields(logrus.Fields{
-		"mint":          tokenInfo.Mint.String(),
-		"name":          tokenInfo.Name,
-		"symbol":        tokenInfo.Symbol,
-		"creator":       tokenInfo.Creator.String(),
-		"processing_ms": processingMs,
-		"discovered_at": tokenInfo.DiscoveredAt.Format("15:04:05.000"),
-		"timestamp":     tokenInfo.Timestamp.Format("15:04:05.000"),
+		"mint":                     tokenInfo.Mint,
+		"name":                     tokenInfo.Name,
+		"symbol":                   tokenInfo.Symbol,
+		"creator":                  tokenInfo.Creator,
+		"creator_vault":            tokenInfo.CreatorVault,
+		"bonding_curve":            tokenInfo.BondingCurve,
+		"associated_bonding_curve": tokenInfo.AssociatedBondingCurve,
+		"processing_ms":            processingMs,
+		"discovered_at":            tokenInfo.DiscoveredAt.Format("15:04:05.000"),
+		"timestamp":                tokenInfo.Timestamp.Format("15:04:05.000"),
 	}).Info("🔍 New token discovered")
 
 	// Send token event to channel

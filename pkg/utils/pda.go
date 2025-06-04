@@ -27,7 +27,6 @@ func (p *PumpFunPDADerivation) DeriveAssociatedBondingCurve(mint common.PublicKe
 func (p *PumpFunPDADerivation) DeriveCreatorVault(creator common.PublicKey) (*common.PublicKey, uint8, error) {
 	seeds := [][]byte{
 		[]byte("creator-vault"),
-		common.TokenProgramID.Bytes(),
 		creator.Bytes(),
 	}
 

@@ -83,7 +83,7 @@ type StrategyConfig struct {
 	FilterByName     bool     `mapstructure:"filter_by_name" yaml:"filter_by_name"`
 	NamePatterns     []string `mapstructure:"name_patterns" yaml:"name_patterns"`
 	MinLiquiditySOL  float64  `mapstructure:"min_liquidity_sol" yaml:"min_liquidity_sol"`
-	MaxTokensPerHour int      `mapstructure:"max_tokens_per_hour" yaml:"max_tokens_per_hour"`
+	MaxTokensPerHour int64    `mapstructure:"max_tokens_per_hour" yaml:"max_tokens_per_hour"`
 	YoloMode         bool     `mapstructure:"yolo_mode" yaml:"yolo_mode"`
 	HoldOnly         bool     `mapstructure:"hold_only" yaml:"hold_only"`
 }
@@ -758,7 +758,7 @@ func GetConfigFromEnv(envPath string) *Config {
 			FilterByCreator:  getEnvBool("PUMPBOT_STRATEGY_FILTER_BY_CREATOR", false),
 			FilterByName:     getEnvBool("PUMPBOT_STRATEGY_FILTER_BY_NAME", false),
 			MinLiquiditySOL:  getEnvFloat("PUMPBOT_STRATEGY_MIN_LIQUIDITY_SOL", 0.0),
-			MaxTokensPerHour: getEnvInt("PUMPBOT_STRATEGY_MAX_TOKENS_PER_HOUR", 10),
+			MaxTokensPerHour: getEnvInt64("PUMPBOT_STRATEGY_MAX_TOKENS_PER_HOUR", 10),
 			YoloMode:         getEnvBool("PUMPBOT_STRATEGY_YOLO_MODE", false),
 			HoldOnly:         getEnvBool("PUMPBOT_STRATEGY_HOLD_ONLY", false),
 		},

@@ -382,6 +382,13 @@ func (a *App) Start() error {
 		a.logger.Info("🚫 Auto-sell is disabled - tokens will be held")
 	}
 
+	balance, err := a.wallet.GetBalanceSOL(a.ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get balance: %w", err)
+	}
+
+	a.logger.Info(fmt.Sprintf("⚠️ Balance: %v SOL", balance))
+
 	// NEW: Log trading configuration
 	if a.config.IsTokenBasedTrading() {
 		a.logger.WithFields(map[string]interface{}{
