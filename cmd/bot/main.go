@@ -17,7 +17,7 @@ import (
 	"pump-fun-bot-go/internal/wallet"
 )
 
-const Version = "1.4.0"
+const Version = "1.5.0"
 
 // CLI flags
 var (
@@ -35,12 +35,11 @@ var (
 	jitoTip      = flag.Uint64("jito-tip", 10000, "Jito tip amount in lamports")
 	jitoEndpoint = flag.String("jito-endpoint", "", "Custom Jito endpoint URL")
 
-	// Ultra-Fast Mode flags
-	ultraFast       = flag.Bool("ultra-fast", false, "Enable ultra-fast mode (maximum speed)")
-	skipValidation  = flag.Bool("skip-validation", false, "Skip validation checks for speed")
+	// Enhanced performance flags
+	skipValidation  = flag.Bool("skip-validation", false, "Skip validation checks for maximum speed")
 	noConfirmation  = flag.Bool("no-confirm", false, "Don't wait for transaction confirmation")
 	parallelWorkers = flag.Int("parallel-workers", 1, "Number of parallel processing workers")
-	cacheBlockhash  = flag.Bool("cache-blockhash", false, "Cache blockhash for speed")
+	cacheBlockhash  = flag.Bool("cache-blockhash", true, "Cache blockhash for speed")
 	fireAndForget   = flag.Bool("fire-and-forget", false, "Send transactions without waiting")
 
 	// Performance flags
@@ -48,7 +47,7 @@ var (
 	benchmark  = flag.Bool("benchmark", false, "Enable benchmark mode with detailed timing")
 )
 
-// Enhanced App with Ultra-Fast support
+// Enhanced App with Ultra-Fast support only
 type App struct {
 	config       *config.Config
 	logger       *logger.Logger
@@ -128,15 +127,9 @@ func applyCliOverrides(cfg *config.Config) {
 		cfg.JITO.UseForTrading = true
 	}
 
-	// Ultra-Fast Mode overrides
-	if *ultraFast {
-		// Enable ultra-fast mode with optimized settings
-		cfg.UltraFast.Enabled = true
-		cfg.UltraFast.SkipValidation = true
-		cfg.UltraFast.CacheBlockhash = true
-		cfg.UltraFast.ParallelWorkers = max(*parallelWorkers, 3)
-		cfg.UltraFast.PrecomputeInstructions = true
-	}
+	// Ultra-Fast Mode is always enabled, but we can configure it
+	cfg.UltraFast.Enabled = true
+	cfg.UltraFast.CacheBlockhash = *cacheBlockhash
 
 	if *skipValidation {
 		cfg.UltraFast.SkipValidation = true
@@ -149,10 +142,6 @@ func applyCliOverrides(cfg *config.Config) {
 
 	if *parallelWorkers > 1 {
 		cfg.UltraFast.ParallelWorkers = *parallelWorkers
-	}
-
-	if *cacheBlockhash {
-		cfg.UltraFast.CacheBlockhash = true
 	}
 
 	if *fireAndForget {
@@ -188,7 +177,7 @@ func initializeEnhancedLogger(cfg *config.Config) *logger.Logger {
 	return log
 }
 
-// Enhanced NewApp with Ultra-Fast Mode support
+// Enhanced NewApp with Ultra-Fast Mode only
 func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -235,10 +224,10 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 	priceCalc := pumpfun.NewPriceCalculator(solanaClient)
 	listener := pumpfun.NewListener(wsClient, solanaClient, log, cfg)
 
-	// Initialize trader based on mode
+	// Initialize trader - always ultra-fast mode
 	var trader pumpfun.TraderInterface
 	if !*dryRun && walletInstance != nil {
-		trader = createEnhancedTrader(cfg, walletInstance, solanaClient, jitoClient, priceCalc, log, tradeLogger)
+		trader = createTrader(cfg, walletInstance, solanaClient, jitoClient, log, tradeLogger)
 	}
 
 	app := &App{
@@ -268,27 +257,18 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 	return app, nil
 }
 
-// createEnhancedTrader with Ultra-Fast Mode support (without ExtremeFast)
-func createEnhancedTrader(
+// createTrader creates ultra-fast trader with optional Jito protection
+func createTrader(
 	cfg *config.Config,
 	wallet *wallet.Wallet,
 	solanaClient *solana.Client,
 	jitoClient *solana.JitoClient,
-	priceCalc *pumpfun.PriceCalculator,
 	log *logger.Logger,
 	tradeLogger *logger.TradeLogger,
 ) pumpfun.TraderInterface {
 
-	var baseTrader pumpfun.TraderInterface
-
-	// Choose trader based on enabled modes
-	if cfg.UltraFast.Enabled {
-		log.Info("⚡⚡ Creating Ultra-Fast trader")
-		baseTrader = pumpfun.NewUltraFastTrader(wallet, solanaClient, log, cfg)
-	} else {
-		log.Info("🔄 Creating Normal trader")
-		baseTrader = pumpfun.NewTrader(wallet, solanaClient, priceCalc, log, tradeLogger, cfg)
-	}
+	log.Info("⚡⚡ Creating Ultra-Fast trader")
+	baseTrader := pumpfun.NewTrader(wallet, solanaClient, log, cfg)
 
 	// Wrap with Jito protection if enabled
 	if cfg.JITO.Enabled && cfg.JITO.UseForTrading {
@@ -301,12 +281,9 @@ func createEnhancedTrader(
 
 // Enhanced Start method with Ultra-Fast Mode
 func (a *App) Start() error {
-	mode := "NORMAL"
-	if a.config.UltraFast.Enabled {
-		mode = "ULTRA-FAST"
-		if a.config.UltraFast.ParallelWorkers > 1 {
-			mode += fmt.Sprintf(" (%d workers)", a.config.UltraFast.ParallelWorkers)
-		}
+	mode := "ULTRA-FAST"
+	if a.config.UltraFast.ParallelWorkers > 1 {
+		mode += fmt.Sprintf(" (%d workers)", a.config.UltraFast.ParallelWorkers)
 	}
 
 	if a.config.JITO.Enabled && a.config.JITO.UseForTrading {
@@ -349,9 +326,7 @@ func (a *App) Start() error {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	a.logger.Info("🎯 Bot started - listening for new tokens!")
-	if a.config.UltraFast.Enabled {
-		a.logger.Info("⚡⚡ ULTRA-FAST MODE ACTIVE - Maximum speed processing enabled!")
-	}
+	a.logger.Info("⚡⚡ ULTRA-FAST MODE ACTIVE - Maximum speed processing enabled!")
 
 	// Wait for shutdown
 	select {
@@ -640,11 +615,4 @@ func (a *App) shutdown() {
 	}
 
 	a.logger.Info("✅ Shutdown complete")
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

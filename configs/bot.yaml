@@ -1,8 +1,3 @@
-# configs/bot.yaml - Enhanced with Ultra-Fast Mode only
-
-# Pump Fun Bot Configuration with Ultra-Fast Mode Support
-# Use ${VARIABLE_NAME:-default_value} syntax for environment variables
-
 # Network settings
 network: "${PUMPBOT_NETWORK:-mainnet}"
 rpc_url: "${PUMPBOT_RPC_URL:-}"
@@ -16,7 +11,6 @@ private_key: "${PUMPBOT_PRIVATE_KEY}"
 trading:
   buy_amount_sol: ${PUMPBOT_TRADING_BUY_AMOUNT_SOL:-0.01}
   slippage_bp: ${PUMPBOT_TRADING_SLIPPAGE_BP:-500}
-  max_gas_price: ${PUMPBOT_TRADING_MAX_GAS_PRICE:-0}
   priority_fee: ${PUMPBOT_TRADING_PRIORITY_FEE:-0}
   auto_sell: ${PUMPBOT_TRADING_AUTO_SELL:-false}
   sell_delay_seconds: ${PUMPBOT_TRADING_SELL_DELAY_SECONDS:-30}
@@ -36,45 +30,38 @@ strategy:
   yolo_mode: ${PUMPBOT_STRATEGY_YOLO_MODE:-false}
   hold_only: ${PUMPBOT_STRATEGY_HOLD_ONLY:-false}
 
-# ⚡⚡ ULTRA-FAST MODE - Maximum Speed Trading
+# ⚡⚡ ULTRA-FAST MODE - Default and Only Mode
 ultra_fast:
-  # Core ultra-fast settings
-  enabled: ${PUMPBOT_ULTRA_FAST_ENABLED:-true}
-  skip_validation: ${PUMPBOT_ULTRA_FAST_SKIP_VALIDATION:-false}      # Skip all validation checks
-  no_confirmation: ${PUMPBOT_ULTRA_FAST_NO_CONFIRMATION:-false}      # Don't wait for confirmation
-  fire_and_forget: ${PUMPBOT_ULTRA_FAST_FIRE_AND_FORGET:-false}      # Send and immediately continue
+  # Core ultra-fast settings (always enabled)
+  enabled: true
+  skip_validation: ${PUMPBOT_ULTRA_FAST_SKIP_VALIDATION:-false}
+  no_confirmation: ${PUMPBOT_ULTRA_FAST_NO_CONFIRMATION:-false}
+  fire_and_forget: ${PUMPBOT_ULTRA_FAST_FIRE_AND_FORGET:-false}
 
-  # Parallel processing (multiply your speed!)
-  parallel_workers: ${PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS:-6}        # Number of parallel workers
-  token_queue_size: ${PUMPBOT_ULTRA_FAST_TOKEN_QUEUE_SIZE:-100}      # Queue buffer size
+  # Parallel processing for maximum speed
+  parallel_workers: ${PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS:-3}
+  token_queue_size: ${PUMPBOT_ULTRA_FAST_TOKEN_QUEUE_SIZE:-100}
 
   # Performance optimizations
-  cache_blockhash: ${PUMPBOT_ULTRA_FAST_CACHE_BLOCKHASH:-true}       # Cache blockhash for speed
-  blockhash_refresh_interval: ${PUMPBOT_ULTRA_FAST_BLOCKHASH_INTERVAL:-10}  # Seconds between refresh
-  precompute_instructions: ${PUMPBOT_ULTRA_FAST_PRECOMPUTE_INSTRUCTIONS:-true}  # Pre-build instructions
-  reuse_buffers: ${PUMPBOT_ULTRA_FAST_REUSE_BUFFERS:-true}           # Reuse memory buffers
+  cache_blockhash: ${PUMPBOT_ULTRA_FAST_CACHE_BLOCKHASH:-true}
+  blockhash_refresh_interval: ${PUMPBOT_ULTRA_FAST_BLOCKHASH_INTERVAL:-10}
+  precompute_instructions: ${PUMPBOT_ULTRA_FAST_PRECOMPUTE_INSTRUCTIONS:-true}
+  rpc_timeout_ms: ${PUMPBOT_ULTRA_FAST_RPC_TIMEOUT_MS:-3000}
 
-  # Network optimizations
-  multiplex_rpc: ${PUMPBOT_ULTRA_FAST_MULTIPLEX_RPC:-false}          # Use multiple RPC endpoints
-  rpc_endpoints: []                                                   # List of RPC endpoints
-  use_fastest_rpc: ${PUMPBOT_ULTRA_FAST_USE_FASTEST_RPC:-false}      # Auto-select fastest RPC
-  rpc_timeout_ms: ${PUMPBOT_ULTRA_FAST_RPC_TIMEOUT_MS:-3000}         # RPC timeout in milliseconds
-
-  # Performance monitoring and debugging
-  benchmark_mode: ${PUMPBOT_ULTRA_FAST_BENCHMARK_MODE:-false}        # Enable detailed benchmarking
-  log_latency: ${PUMPBOT_ULTRA_FAST_LOG_LATENCY:-true}              # Log detailed latency info
-  profile_memory: ${PUMPBOT_ULTRA_FAST_PROFILE_MEMORY:-false}        # Enable memory profiling
+  # Performance monitoring
+  benchmark_mode: ${PUMPBOT_ULTRA_FAST_BENCHMARK_MODE:-false}
+  log_latency: ${PUMPBOT_ULTRA_FAST_LOG_LATENCY:-true}
 
   # Risk management for ultra-fast mode
-  max_tokens_per_second: ${PUMPBOT_ULTRA_FAST_MAX_TOKENS_PER_SECOND:-10}  # Rate limiting
-  emergency_stop_loss: ${PUMPBOT_ULTRA_FAST_EMERGENCY_STOP_LOSS:--50.0}   # Emergency stop loss %
-  fixed_buy_amount: ${PUMPBOT_ULTRA_FAST_FIXED_BUY_AMOUNT:-true}           # Use fixed amounts for speed
+  max_tokens_per_second: ${PUMPBOT_ULTRA_FAST_MAX_TOKENS_PER_SECOND:-10}
+  emergency_stop_loss: ${PUMPBOT_ULTRA_FAST_EMERGENCY_STOP_LOSS:--50.0}
+  fixed_buy_amount: ${PUMPBOT_ULTRA_FAST_FIXED_BUY_AMOUNT:-true}
 
   # Advanced optimizations (⚠️ DANGEROUS - use with caution!)
-  skip_ata_creation: ${PUMPBOT_ULTRA_FAST_SKIP_ATA_CREATION:-false}   # Skip ATA creation checks
-  assume_ata_exists: ${PUMPBOT_ULTRA_FAST_ASSUME_ATA_EXISTS:-false}   # Assume ATA already exists
-  immediate_execution: ${PUMPBOT_ULTRA_FAST_IMMEDIATE_EXECUTION:-true} # Execute without delay
-  priority_over_safety: ${PUMPBOT_ULTRA_FAST_PRIORITY_OVER_SAFETY:-false}  # Speed over safety (VERY RISKY!)
+  skip_ata_creation: ${PUMPBOT_ULTRA_FAST_SKIP_ATA_CREATION:-false}
+  assume_ata_exists: ${PUMPBOT_ULTRA_FAST_ASSUME_ATA_EXISTS:-false}
+  immediate_execution: ${PUMPBOT_ULTRA_FAST_IMMEDIATE_EXECUTION:-true}
+  priority_over_safety: ${PUMPBOT_ULTRA_FAST_PRIORITY_OVER_SAFETY:-false}
 
 # JITO MEV Protection Settings
 jito:
@@ -107,7 +94,6 @@ advanced:
 # ========================================
 
 # 💀 MAXIMUM SPEED (EXTREMELY RISKY):
-# export PUMPBOT_ULTRA_FAST_ENABLED="true"
 # export PUMPBOT_ULTRA_FAST_SKIP_VALIDATION="true"
 # export PUMPBOT_ULTRA_FAST_FIRE_AND_FORGET="true"
 # export PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS="5"
@@ -115,20 +101,17 @@ advanced:
 # export PUMPBOT_STRATEGY_YOLO_MODE="true"
 
 # ⚡ BALANCED ULTRA-FAST (RECOMMENDED):
-# export PUMPBOT_ULTRA_FAST_ENABLED="true"
 # export PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS="3"
 # export PUMPBOT_ULTRA_FAST_CACHE_BLOCKHASH="true"
 # export PUMPBOT_ULTRA_FAST_PRECOMPUTE_INSTRUCTIONS="true"
 # export PUMPBOT_ULTRA_FAST_LOG_LATENCY="true"
 
 # 🛡️ ULTRA-FAST + MEV PROTECTION:
-# export PUMPBOT_ULTRA_FAST_ENABLED="true"
 # export PUMPBOT_JITO_ENABLED="true"
 # export PUMPBOT_JITO_USE_FOR_TRADING="true"
 # export PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS="3"
 
 # 🔧 DEVELOPMENT/TESTING ULTRA-FAST:
-# export PUMPBOT_ULTRA_FAST_ENABLED="true"
 # export PUMPBOT_ULTRA_FAST_BENCHMARK_MODE="true"
 # export PUMPBOT_ULTRA_FAST_LOG_LATENCY="true"
 # export PUMPBOT_NETWORK="devnet"
@@ -138,28 +121,28 @@ advanced:
 # ========================================
 
 # Test ultra-fast mode on devnet:
-# ./build/pump-fun-bot --ultra-fast --network devnet --dry-run --log-latency
+# ./build/pump-fun-bot --network devnet --dry-run --log-latency
 
 # Ultra-fast with MEV protection:
-# ./build/pump-fun-bot --ultra-fast --jito --network mainnet
+# ./build/pump-fun-bot --jito --network mainnet
 
 # Maximum speed (DANGEROUS):
-# ./build/pump-fun-bot --ultra-fast --skip-validation --fire-and-forget --parallel-workers 5
+# ./build/pump-fun-bot --skip-validation --fire-and-forget --parallel-workers 5
 
 # Benchmark mode:
-# ./build/pump-fun-bot --ultra-fast --benchmark --log-latency --network devnet
+# ./build/pump-fun-bot --benchmark --log-latency --network devnet
 
 # ========================================
 # 📊 EXPECTED PERFORMANCE IMPROVEMENTS
 # ========================================
 
-# Normal Mode:     Discovery → Execution: 300-800ms
-# Ultra-Fast:      Discovery → Execution: 20-100ms
-# Ultra-Fast Max:  Discovery → Execution: 5-50ms
+# Ultra-Fast Single:  Discovery → Execution: 20-100ms
+# Ultra-Fast Parallel: Discovery → Execution: 5-50ms
+# Maximum Speed Mode: Discovery → Execution: 2-20ms
 
 # Parallel Workers Performance:
 # 1 worker:  1x speed (baseline)
-# 3 workers: 2.5x speed (diminishing returns)
+# 3 workers: 2.5x speed (recommended)
 # 5 workers: 3.5x speed (optimal for most setups)
 # 10 workers: 4x speed (marginal gains, higher resource usage)
 
@@ -167,7 +150,7 @@ advanced:
 # ⚠️ ULTRA-FAST MODE WARNINGS
 # ========================================
 
-# ⚠️ Ultra-fast mode trades safety for speed
+# ⚠️ This bot operates in ultra-fast mode by default
 # ⚠️ skip_validation can lead to failed transactions
 # ⚠️ fire_and_forget doesn't wait for confirmation
 # ⚠️ parallel_workers increases resource usage
@@ -175,7 +158,6 @@ advanced:
 # ⚠️ Always test on devnet first!
 # ⚠️ Monitor your wallet balance closely
 # ⚠️ Set reasonable rate limits (max_tokens_per_second)
-# ⚠️ Ultra-fast mode may violate some network policies
 
 # 💡 OPTIMIZATION TIPS:
 # - Start with 3 parallel workers and tune based on performance
@@ -184,4 +166,3 @@ advanced:
 # - Combine with Jito for speed + MEV protection
 # - Monitor success rates vs speed improvements
 # - Adjust RPC timeout based on your connection
-# - Consider multiple RPC endpoints for redundancy

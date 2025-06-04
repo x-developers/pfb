@@ -19,11 +19,11 @@ type TraderInterface interface {
 	// GetTradingStats returns trading statistics
 	GetTradingStats() map[string]interface{}
 
-	// GetTraderType returns the type of trader ("normal", "extreme_fast")
+	// GetTraderType returns the type of trader
 	GetTraderType() string
 }
 
-// TradeResult represents the result of a trade (already defined, keeping for reference)
+// TradeResult represents the result of a trade
 type TradeResult struct {
 	Success      bool
 	Signature    string
@@ -31,5 +31,5 @@ type TradeResult struct {
 	AmountTokens uint64
 	Price        float64
 	Error        string
-	TradeTime    int64 // Add trade time in milliseconds
+	TradeTime    int64 // Trade time in milliseconds
 }
