@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"fmt"
-	associatedtokenaccount "github.com/gagliardetto/solana-go/programs/associated-token-account"
 	confirm "github.com/gagliardetto/solana-go/rpc/sendAndConfirmTransaction"
 	"github.com/gagliardetto/solana-go/rpc/ws"
 	"sync"
@@ -121,9 +120,9 @@ func (c *Client) blockhashUpdater() {
 	for {
 		select {
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			//ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
-			result, err := c.client.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
+			result, err := c.client.GetLatestBlockhash(context.TODO(), rpc.CommitmentProcessed)
 			if err == nil {
 				c.cacheBlockhash(result.Value.Blockhash)
 				c.logger.Debug("🔄 Blockhash updated in background")
@@ -131,7 +130,7 @@ func (c *Client) blockhashUpdater() {
 				c.logger.WithError(err).Debug("Failed to update blockhash in background")
 			}
 
-			cancel()
+			//cancel()
 		}
 	}
 }
@@ -149,23 +148,6 @@ func (c *Client) GetBlockhashCacheInfo() map[string]interface{} {
 		"is_valid":    time.Since(c.blockhashTimestamp) < c.blockhashTTL,
 		"blockhash":   c.cachedBlockhash.String(),
 	}
-}
-
-// Rest of the client methods remain the same...
-
-// GetAccountInfo gets account information
-func (c *Client) GetAccountInfo(ctx context.Context, address string) (*rpc.GetAccountInfoResult, error) {
-	pubkey, err := solana.PublicKeyFromBase58(address)
-	if err != nil {
-		return nil, fmt.Errorf("invalid address: %w", err)
-	}
-
-	result, err := c.client.GetAccountInfo(ctx, pubkey)
-	if err != nil {
-		return nil, fmt.Errorf("getAccountInfo failed: %w", err)
-	}
-
-	return result, nil
 }
 
 // GetTokenBalance gets token account balance
@@ -187,126 +169,25 @@ func (c *Client) GetTokenBalance(ctx context.Context, address string) (uint64, e
 	return uint64(*result.Value.UiAmount), nil
 }
 
-// GetTransaction gets transaction information
-func (c *Client) GetTransaction(ctx context.Context, signature string) (*rpc.GetTransactionResult, error) {
-	sig, err := solana.SignatureFromBase58(signature)
-	if err != nil {
-		return nil, fmt.Errorf("invalid signature: %w", err)
-	}
-
-	result, err := c.client.GetTransaction(
-		ctx,
-		sig,
-		&rpc.GetTransactionOpts{
-			Encoding:                       solana.EncodingJSON,
-			MaxSupportedTransactionVersion: &[]uint64{0}[0],
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("getTransaction failed: %w", err)
-	}
-
-	return result, nil
-}
-
-// GetBlock gets block information
-func (c *Client) GetBlock(ctx context.Context, slot uint64) (*rpc.GetBlockResult, error) {
-	result, err := c.client.GetBlock(ctx, slot)
-	if err != nil {
-		return nil, fmt.Errorf("getBlock failed: %w", err)
-	}
-
-	return result, nil
-}
-
 // SendAndConfirmTransaction sends a transaction and confirms it
 func (c *Client) SendAndConfirmTransaction(ctx context.Context, transaction *solana.Transaction) (solana.Signature, error) {
-	sig, err := confirm.SendAndConfirmTransaction(
+	opts := rpc.TransactionOpts{
+		SkipPreflight:       false,
+		PreflightCommitment: rpc.CommitmentProcessed,
+	}
+	sig, err := confirm.SendAndConfirmTransactionWithOpts(
 		ctx,
 		c.client,
 		c.wsClient,
 		transaction,
+		opts,
+		nil,
 	)
 	if err != nil {
 		return solana.Signature{}, fmt.Errorf("failed to send transaction: %w", err)
 	}
 
 	return sig, nil
-}
-
-// CreateATA creates an Associated Token Account
-func (c *Client) CreateATA(pub solana.PublicKey, priv solana.PrivateKey, mintAddress solana.PublicKey) (*solana.PublicKey, error) {
-	// Find ATA address
-	ataAddress, _, err := solana.FindAssociatedTokenAddress(
-		pub,
-		mintAddress,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find ATA address: %w", err)
-	}
-
-	// Check if ATA already exists
-	_, err = c.client.GetAccountInfo(context.TODO(), ataAddress)
-	if err == nil {
-		// ATA already exists
-		c.logger.WithField("ata_address", ataAddress.String()).Debug("ATA already exists")
-		return &ataAddress, nil
-	}
-
-	// Create instruction for ATA creation
-	instruction := associatedtokenaccount.NewCreateInstruction(
-		pub,         // payer
-		pub,         // wallet
-		mintAddress, // mint
-	).Build()
-
-	// Get latest blockhash (will use cache if available)
-	recent, err := c.GetLatestBlockhash(context.TODO())
-	if err != nil {
-		return nil, fmt.Errorf("failed to get latest blockhash: %w", err)
-	}
-
-	// Create transaction
-	tx, err := solana.NewTransaction(
-		[]solana.Instruction{instruction},
-		recent,
-		solana.TransactionPayer(pub),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create transaction: %w", err)
-	}
-
-	// Sign transaction
-	_, err = tx.Sign(
-		func(key solana.PublicKey) *solana.PrivateKey {
-			if pub.Equals(key) {
-				acc := priv
-				return &acc
-			}
-			return nil
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign transaction: %w", err)
-	}
-
-	// Send transaction
-	sig, err := confirm.SendAndConfirmTransaction(
-		context.TODO(),
-		c.client,
-		c.wsClient,
-		tx,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send transaction: %w", err)
-	}
-
-	c.logger.WithFields(map[string]interface{}{
-		"signature":   sig.String(),
-		"ata_address": ataAddress.String(),
-	}).Info("✅ ATA created successfully")
-
-	return &ataAddress, nil
 }
 
 // SendTransaction sends a transaction to the network

@@ -314,7 +314,7 @@ func (l *LogListener) extractTokenFromData(dataStr string, signature string, slo
 	if tokenEvent.CreatorVault, _, err = l.pdaDerivation.DeriveCreatorVault(tokenEvent.Creator); err != nil {
 		return nil, err
 	}
-	if tokenEvent.AssociatedBondingCurve, _, err = l.pdaDerivation.DeriveAssociatedBondingCurve(tokenEvent.Mint, tokenEvent.BondingCurve); err != nil {
+	if tokenEvent.AssociatedBondingCurve, _, err = solana.FindAssociatedTokenAddress(tokenEvent.BondingCurve, tokenEvent.Mint); err != nil {
 		return nil, err
 	}
 

@@ -12,18 +12,6 @@ func NewPumpFunPDADerivation() *PumpFunPDADerivation {
 	return &PumpFunPDADerivation{}
 }
 
-func (p *PumpFunPDADerivation) DeriveAssociatedBondingCurve(mint solana.PublicKey, bondingCurve solana.PublicKey) (solana.PublicKey, uint8, error) {
-	seeds := [][]byte{
-		bondingCurve.Bytes(),
-		//solana.TokenProgramID.Bytes(),
-		mint.Bytes(),
-	}
-
-	data, nonce, err := solana.FindProgramAddress(seeds, solana.SPLAssociatedTokenAccountProgramID)
-
-	return data, nonce, err
-}
-
 func (p *PumpFunPDADerivation) DeriveCreatorVault(creator solana.PublicKey) (solana.PublicKey, uint8, error) {
 	seeds := [][]byte{
 		[]byte("creator-vault"),

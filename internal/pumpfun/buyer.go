@@ -88,14 +88,8 @@ func (b *Buyer) Buy(ctx context.Context, request BuyRequest) (*BuyResult, error)
 		return b.createErrorResult(startTime, fmt.Sprintf("invalid request: %v", err)), err
 	}
 
-	// Create ATA if needed
-	ataAddress, err := b.ensureAssociatedTokenAccount(ctx, request.TokenEvent.Mint)
-	if err != nil {
-		return b.createErrorResult(startTime, fmt.Sprintf("failed to ensure ATA: %v", err)), err
-	}
-
 	// Create and send buy transaction
-	result, err := b.executeBuyTransaction(ctx, request, ataAddress)
+	result, err := b.executeBuyTransaction(ctx, request)
 	if err != nil {
 		return b.createErrorResult(startTime, fmt.Sprintf("transaction failed: %v", err)), err
 	}
@@ -145,115 +139,15 @@ func (b *Buyer) validateRequest(request BuyRequest) error {
 	return nil
 }
 
-// ensureAssociatedTokenAccount creates ATA if it doesn't exist
-func (b *Buyer) ensureAssociatedTokenAccount(ctx context.Context, mint solana.PublicKey) (solana.PublicKey, error) {
-	ataAddress, err := b.wallet.GetAssociatedTokenAddress(mint)
-	if err != nil {
-		return solana.PublicKey{}, fmt.Errorf("failed to get ATA address: %w", err)
-	}
-
-	// Check if ATA already exists
-	_, err = b.rpcClient.GetAccountInfo(ctx, ataAddress.String())
-	if err == nil {
-		// ATA already exists
-		b.logger.WithField("ata_address", ataAddress.String()).Debug("ATA already exists")
-		return ataAddress, nil
-	}
-
-	// Create ATA
-	b.logger.WithField("ata_address", ataAddress.String()).Debug("Creating Associated Token Account")
-
-	err = b.createATA(ctx, mint, ataAddress)
-	if err != nil {
-		return solana.PublicKey{}, fmt.Errorf("failed to create ATA: %w", err)
-	}
-
-	return ataAddress, nil
-}
-
-// createATA creates an Associated Token Account
-func (b *Buyer) createATA(ctx context.Context, mint, ataAddress solana.PublicKey) error {
-	instruction := associatedtokenaccount.NewCreateInstruction(
-		b.wallet.GetPublicKey(), // payer
-		b.wallet.GetPublicKey(), // wallet
-		mint,                    // mint
-	).Build()
-
-	// Get recent blockhash
-	blockhash, err := b.rpcClient.GetLatestBlockhash(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get latest blockhash: %w", err)
-	}
-
-	// Create and send transaction
-	transaction, err := solana.NewTransaction(
-		[]solana.Instruction{instruction},
-		blockhash,
-		solana.TransactionPayer(b.wallet.GetPublicKey()),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create ATA transaction: %w", err)
-	}
-
-	// Sign transaction
-	_, err = transaction.Sign(
-		func(key solana.PublicKey) *solana.PrivateKey {
-			if b.wallet.GetPublicKey().Equals(key) {
-				account := b.wallet.GetAccount()
-				return &account
-			}
-			return nil
-		},
-	)
-	if err != nil {
-		return fmt.Errorf("failed to sign ATA transaction: %w", err)
-	}
-
-	// Send transaction
-	_, err = b.rpcClient.SendAndConfirmTransaction(ctx, transaction)
-	if err != nil {
-		return fmt.Errorf("failed to send ATA transaction: %w", err)
-	}
-
-	b.logger.WithField("ata_address", ataAddress.String()).Info("✅ ATA created successfully")
-	return nil
-}
-
 // executeBuyTransaction creates and executes the buy transaction
-func (b *Buyer) executeBuyTransaction(ctx context.Context, request BuyRequest, ataAddress solana.PublicKey) (*BuyResult, error) {
-	// Create buy instruction
-	buyInstruction := b.createBuyInstruction(request, ataAddress)
-
-	// Get recent blockhash
-	blockhash, err := b.rpcClient.GetLatestBlockhash(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get latest blockhash: %w", err)
-	}
-
+func (b *Buyer) executeBuyTransaction(ctx context.Context, request BuyRequest) (*BuyResult, error) {
 	// Create transaction
-	transaction, err := solana.NewTransaction(
-		[]solana.Instruction{buyInstruction},
-		blockhash,
-		solana.TransactionPayer(b.wallet.GetPublicKey()),
-	)
+	transaction, err := b.CreateBuyTransaction(ctx, request)
+
+	fmt.Printf(transaction.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transaction: %w", err)
 	}
-
-	// Sign transaction
-	_, err = transaction.Sign(
-		func(key solana.PublicKey) *solana.PrivateKey {
-			if b.wallet.GetPublicKey().Equals(key) {
-				account := b.wallet.GetAccount()
-				return &account
-			}
-			return nil
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign transaction: %w", err)
-	}
-
 	// Send transaction
 	signature, err := b.rpcClient.SendAndConfirmTransaction(ctx, transaction)
 	if err != nil {
@@ -273,6 +167,14 @@ func (b *Buyer) executeBuyTransaction(ctx context.Context, request BuyRequest, a
 		AmountTokens: request.AmountTokens,
 		Price:        price,
 	}, nil
+}
+
+func (b *Buyer) createAssociatedAccountInstruction(mint solana.PublicKey) solana.Instruction {
+	return associatedtokenaccount.NewCreateInstruction(
+		b.wallet.GetPublicKey(), // payer
+		b.wallet.GetPublicKey(), // wallet
+		mint,                    // mint
+	).Build()
 }
 
 // createBuyInstruction creates the pump.fun buy instruction
@@ -412,8 +314,11 @@ func (b *Buyer) CreateBuyTransaction(ctx context.Context, request BuyRequest) (*
 		return nil, fmt.Errorf("failed to get ATA address: %w", err)
 	}
 
+	ataInstruction := b.createAssociatedAccountInstruction(request.TokenEvent.Mint)
+	b.logger.LogInstruction(ataInstruction)
 	// Create buy instruction
 	buyInstruction := b.createBuyInstruction(request, ataAddress)
+	b.logger.LogInstruction(buyInstruction)
 
 	// Get recent blockhash
 	blockhash, err := b.rpcClient.GetLatestBlockhash(ctx)
@@ -423,12 +328,27 @@ func (b *Buyer) CreateBuyTransaction(ctx context.Context, request BuyRequest) (*
 
 	// Create transaction
 	transaction, err := solana.NewTransaction(
-		[]solana.Instruction{buyInstruction},
+		[]solana.Instruction{ataInstruction, buyInstruction},
 		blockhash,
 		solana.TransactionPayer(b.wallet.GetPublicKey()),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transaction: %w", err)
+	}
+
+	// Sign transaction
+	_, err = transaction.Sign(
+		func(key solana.PublicKey) *solana.PrivateKey {
+			if b.wallet.GetPublicKey().Equals(key) {
+				account := b.wallet.GetAccount()
+				return &account
+			}
+			return nil
+		},
+	)
+
+	if err != nil {
+		return transaction, fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
 	return transaction, nil

@@ -504,13 +504,11 @@ func (bl *BlockListener) extractTokenFromInstruction(
 	if tokenEvent.Creator, err = readPubKey(); err != nil {
 		return nil, fmt.Errorf("failed to read creator: %w", err)
 	}
-
-	// Derive additional addresses
 	if tokenEvent.CreatorVault, _, err = bl.pdaDerivation.DeriveCreatorVault(tokenEvent.Creator); err != nil {
 		return nil, fmt.Errorf("failed to derive creator vault: %w", err)
 	}
-	if tokenEvent.AssociatedBondingCurve, _, err = bl.pdaDerivation.DeriveAssociatedBondingCurve(tokenEvent.Mint, tokenEvent.BondingCurve); err != nil {
-		return nil, fmt.Errorf("failed to derive associated bonding curve: %w", err)
+	if tokenEvent.AssociatedBondingCurve, _, err = solana.FindAssociatedTokenAddress(tokenEvent.BondingCurve, tokenEvent.Mint); err != nil {
+		return nil, err
 	}
 
 	// Add block-specific metadata

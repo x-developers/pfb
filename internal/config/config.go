@@ -1042,8 +1042,6 @@ func (c *Config) ShouldUseLogListener() bool {
 	switch c.Listener.Type {
 	case LogsListenerType:
 		return true
-	case MultiListenerType:
-		return c.Listener.EnableLogListener
 	default:
 		return false
 	}
@@ -1053,8 +1051,6 @@ func (c *Config) ShouldUseBlockListener() bool {
 	switch c.Listener.Type {
 	case BlocksListenerType:
 		return true
-	case MultiListenerType:
-		return c.Listener.EnableBlockListener
 	default:
 		return false
 	}
