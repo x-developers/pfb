@@ -19,52 +19,6 @@ import (
 
 const CREATE_DISCRIMINATOR uint64 = 8530921459188068891
 
-// TokenEvent represents a new token creation event with timing information
-type TokenEvent struct {
-	Signature              string           `json:"signature"`
-	Slot                   uint64           `json:"slot"`
-	BlockTime              int64            `json:"block_time"`
-	Mint                   solana.PublicKey `json:"mint"`
-	BondingCurve           solana.PublicKey `json:"bonding_curve"`
-	AssociatedBondingCurve solana.PublicKey `json:"associated_bonding_curve"`
-	Creator                solana.PublicKey `json:"creator"`
-	CreatorVault           solana.PublicKey `json:"creator_vault"`
-	User                   solana.PublicKey `json:"user"`
-	Name                   string           `json:"name"`
-	Symbol                 string           `json:"symbol"`
-	URI                    string           `json:"uri"`
-	InitialPrice           float64          `json:"initial_price"`
-	Timestamp              time.Time        `json:"timestamp"`           // NEW: Время обнаружения токена
-	DiscoveredAt           time.Time        `json:"discovered_at"`       // NEW: Время когда токен был обработан
-	ProcessingDelayMs      int64            `json:"processing_delay_ms"` // NEW: Задержка обработки в мс
-}
-
-// GetAge returns the age of the token since discovery
-func (te *TokenEvent) GetAge() time.Duration {
-	return time.Since(te.DiscoveredAt)
-}
-
-// GetTimeSinceBlockTime returns time since block time
-func (te *TokenEvent) GetTimeSinceBlockTime() time.Duration {
-	if te.BlockTime == 0 {
-		return time.Duration(0)
-	}
-	blockTimeStamp := time.Unix(te.BlockTime, 0)
-	return time.Since(blockTimeStamp)
-}
-
-// IsStale checks if token is too old based on configuration
-func (te *TokenEvent) IsStale(cfg *config.Config) bool {
-	age := te.GetAge()
-	return !cfg.IsTokenAgeValid(age)
-}
-
-// ShouldWaitForDelay checks if we should wait more before trading
-func (te *TokenEvent) ShouldWaitForDelay(cfg *config.Config) bool {
-	timeSinceDiscovery := time.Since(te.DiscoveredAt)
-	return !cfg.IsDiscoveryDelayValid(timeSinceDiscovery)
-}
-
 // Listener listens for new pump.fun tokens
 type Listener struct {
 	wsClient      *client.WSClient
