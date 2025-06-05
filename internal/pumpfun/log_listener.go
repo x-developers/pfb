@@ -2,6 +2,7 @@ package pumpfun
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"pump-fun-bot-go/internal/client"
@@ -256,7 +257,7 @@ func (l *LogListener) extractTokenFromData(dataStr string, signature string, slo
 		Metadata:     make(map[string]interface{}),
 	}
 
-	data, err := utils.DecodeDataString(dataStr)
+	data, err := base64.StdEncoding.DecodeString(dataStr)
 	if err != nil {
 		return nil, err
 	}

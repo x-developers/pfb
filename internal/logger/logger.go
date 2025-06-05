@@ -1,7 +1,9 @@
 package logger
 
 import (
+	"encoding/hex"
 	"fmt"
+	"github.com/gagliardetto/solana-go"
 	"os"
 	"path/filepath"
 	"strings"
@@ -351,4 +353,22 @@ func (l *Logger) LogTransaction(signature, status string, fee uint64) {
 		"fee":       fee,
 		"timestamp": time.Now().Format(time.RFC3339),
 	}).Info("📋 Transaction status")
+}
+
+func (l *Logger) LogInstruction(ix solana.Instruction) {
+	fmt.Println("----- Associated Token Account Instruction -----")
+	fmt.Printf("ProgramID: %s\n", ix.ProgramID().String())
+	fmt.Printf("Accounts:\n")
+	for i, acc := range ix.Accounts() {
+		fmt.Printf("  %d. %s (isSigner: %v, isWritable: %v)\n", i, acc.PublicKey, acc.IsSigner, acc.IsWritable)
+	}
+	data, err := ix.Data()
+	if err != nil {
+		fmt.Printf("Data: <error: %v>\n", err)
+	} else if len(data) > 0 {
+		fmt.Printf("Data: %s\n", hex.EncodeToString(data))
+	} else {
+		fmt.Println("Data: <none>")
+	}
+	fmt.Println("-----------------------------------------------")
 }
