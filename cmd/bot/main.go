@@ -79,6 +79,14 @@ type App struct {
 	// Ultra-Fast Mode components
 	tokenWorkers    []chan *pumpfun.TokenEvent
 	processingStats *ProcessingStats
+
+	// Debug counters
+	listenerTokensReceived int64
+	mainChannelTokensSent  int64
+	workerTokensReceived   int64
+
+	// Channel monitoring
+	channelMonitorTicker *time.Ticker
 }
 
 type ProcessingStats struct {
@@ -277,12 +285,6 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 	// Initialize listener factory
 	listenerFactory := pumpfun.NewListenerFactory(wsClient, solanaClient, cfg, log)
 
-	// Validate listener support
-	if err := listenerFactory.ValidateListenerSupport(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("listener validation failed: %w", err)
-	}
-
 	// Create listener based on configuration and strategy
 	listener, err := listenerFactory.CreateStrategyListener()
 	if err != nil {
@@ -327,8 +329,79 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 	return app, nil
 }
 
+// Новая функция для мониторинга каналов
+func (a *App) monitorChannels() {
+	for {
+		select {
+		case <-a.channelMonitorTicker.C:
+			a.logChannelStatus()
+		case <-a.ctx.Done():
+			return
+		}
+	}
+}
+
+// Функция для логирования состояния каналов
+func (a *App) logChannelStatus() {
+	// Получаем канал от listener'а
+	tokenChan := a.listener.GetTokenChannel()
+
+	// Проверяем состояние основного канала
+	var mainChannelLen, mainChannelCap int
+	if tokenChan != nil {
+		// Используем reflection для получения информации о канале
+		mainChannelLen = len(tokenChan)
+		mainChannelCap = cap(tokenChan)
+	}
+
+	// Проверяем воркер каналы
+	workerStats := make([]map[string]interface{}, len(a.tokenWorkers))
+	totalWorkerBuffered := 0
+
+	for i, workerChan := range a.tokenWorkers {
+		if workerChan != nil {
+			used := len(workerChan)
+			capacity := cap(workerChan)
+			totalWorkerBuffered += used
+
+			workerStats[i] = map[string]interface{}{
+				"worker_id":   i,
+				"buffered":    used,
+				"capacity":    capacity,
+				"free":        capacity - used,
+				"utilization": float64(used) / float64(capacity) * 100,
+			}
+		}
+	}
+
+	a.logger.WithFields(map[string]interface{}{
+		"main_channel_len":         mainChannelLen,
+		"main_channel_cap":         mainChannelCap,
+		"listener_tokens_received": a.listenerTokensReceived,
+		"main_channel_tokens_sent": a.mainChannelTokensSent,
+		"worker_tokens_received":   a.workerTokensReceived,
+		"total_worker_buffered":    totalWorkerBuffered,
+		"worker_channels":          len(a.tokenWorkers),
+		"worker_stats":             workerStats,
+	}).Info("📊 Channel Status Monitor")
+
+	// Предупреждения
+	if a.listenerTokensReceived > 0 && a.mainChannelTokensSent == 0 {
+		a.logger.Warn("⚠️ Listener receiving tokens but main channel not sending!")
+	}
+
+	if a.mainChannelTokensSent > 0 && a.workerTokensReceived == 0 {
+		a.logger.Warn("⚠️ Main channel sending but workers not receiving!")
+	}
+}
+
 // Start starts the application
 func (a *App) Start() error {
+
+	// Start channel monitoring
+	a.channelMonitorTicker = time.NewTicker(10 * time.Second)
+	go a.monitorChannels()
+
 	mode := "ULTRA-FAST"
 	if a.config.UltraFast.ParallelWorkers > 1 {
 		mode += fmt.Sprintf(" (%d workers)", a.config.UltraFast.ParallelWorkers)
@@ -454,10 +527,20 @@ func (a *App) Start() error {
 	}
 }
 
-// initializeUltraFastWorkers sets up parallel processing workers
+// Исправленная функция initializeUltraFastWorkers
 func (a *App) initializeUltraFastWorkers() {
 	workerCount := a.config.UltraFast.ParallelWorkers
-	bufferSize := workerCount * 2
+	bufferSize := a.config.UltraFast.TokenQueueSize
+
+	// Убедимся что buffer size не меньше количества воркеров
+	if bufferSize < workerCount*2 {
+		bufferSize = workerCount * 2
+		a.logger.WithFields(map[string]interface{}{
+			"original_size": a.config.UltraFast.TokenQueueSize,
+			"adjusted_size": bufferSize,
+			"workers":       workerCount,
+		}).Info("📏 Adjusted buffer size for workers")
+	}
 
 	a.tokenWorkers = make([]chan *pumpfun.TokenEvent, workerCount)
 
@@ -467,9 +550,18 @@ func (a *App) initializeUltraFastWorkers() {
 
 		// Start worker goroutine
 		go a.ultraFastWorker(i, workerChan)
+
+		a.logger.WithFields(map[string]interface{}{
+			"worker_id":   i,
+			"buffer_size": bufferSize,
+		}).Debug("🔧 Ultra-Fast worker initialized")
 	}
 
-	a.logger.WithField("workers", workerCount).Info("⚡⚡ Ultra-Fast workers initialized")
+	a.logger.WithFields(map[string]interface{}{
+		"workers":        workerCount,
+		"buffer_size":    bufferSize,
+		"total_capacity": workerCount * bufferSize,
+	}).Info("⚡⚡ Ultra-Fast workers initialized")
 }
 
 // ultraFastWorker processes tokens in parallel
@@ -477,20 +569,55 @@ func (a *App) ultraFastWorker(workerID int, tokenChan <-chan *pumpfun.TokenEvent
 	processed := 0
 	totalTime := time.Duration(0)
 
-	for tokenEvent := range tokenChan {
-		start := time.Now()
+	a.logger.WithField("worker_id", workerID).Info("🔧 Ultra-Fast worker started")
 
-		// Process token with ultra-fast logic
-		a.processTokenUltraFast(tokenEvent, workerID)
+	for {
+		select {
+		case tokenEvent, ok := <-tokenChan:
+			if !ok {
+				a.logger.WithFields(map[string]interface{}{
+					"worker_id": workerID,
+					"processed": processed,
+				}).Info("🔧 Ultra-Fast worker stopping")
+				return
+			}
 
-		// Update worker statistics
-		processingTime := time.Since(start)
-		processed++
-		totalTime += processingTime
+			start := time.Now()
 
-		if processed%10 == 0 {
-			avgTime := totalTime / time.Duration(processed)
-			a.processingStats.WorkerUtilization[workerID] = float64(avgTime.Milliseconds())
+			a.logger.WithFields(map[string]interface{}{
+				"worker_id": workerID,
+				"mint":      tokenEvent.Mint.String(),
+				"name":      tokenEvent.Name,
+				"symbol":    tokenEvent.Symbol,
+				"age_ms":    tokenEvent.GetAgeMs(),
+			}).Info("🎯 Worker processing token")
+
+			// Process token with ultra-fast logic
+			a.processTokenUltraFast(tokenEvent, workerID)
+
+			// Update worker statistics
+			processingTime := time.Since(start)
+			processed++
+			totalTime += processingTime
+
+			if processed%10 == 0 {
+				avgTime := totalTime / time.Duration(processed)
+				a.processingStats.WorkerUtilization[workerID] = float64(avgTime.Milliseconds())
+
+				a.logger.WithFields(map[string]interface{}{
+					"worker_id":       workerID,
+					"processed":       processed,
+					"avg_time_ms":     avgTime.Milliseconds(),
+					"last_process_ms": processingTime.Milliseconds(),
+				}).Debug("📊 Worker statistics")
+			}
+
+		case <-a.ctx.Done():
+			a.logger.WithFields(map[string]interface{}{
+				"worker_id": workerID,
+				"processed": processed,
+			}).Info("🔧 Ultra-Fast worker stopping (context done)")
+			return
 		}
 	}
 }
@@ -613,7 +740,6 @@ func (a *App) updateProcessingStats(processingTime time.Duration, success bool) 
 	}
 }
 
-// runUltraFastMode handles parallel token processing
 func (a *App) runUltraFastMode() error {
 	tokenChan := a.listener.GetTokenChannel()
 	statsTicker := time.NewTicker(30 * time.Second)
@@ -621,24 +747,69 @@ func (a *App) runUltraFastMode() error {
 
 	workerIndex := 0
 
+	a.logger.WithFields(map[string]interface{}{
+		"workers":     len(a.tokenWorkers),
+		"buffer_size": a.config.UltraFast.TokenQueueSize,
+	}).Info("⚡⚡ Ultra-Fast mode started - listening for tokens...")
+
 	for {
 		select {
 		case <-a.ctx.Done():
+			a.logger.Info("🛑 Ultra-Fast mode stopping...")
 			return nil
 
 		case tokenEvent, ok := <-tokenChan:
 			if !ok {
+				a.logger.Info("🔚 Token channel closed")
 				return nil
 			}
 
 			a.processingStats.TokensDiscovered++
 
+			a.logger.WithFields(map[string]interface{}{
+				"mint":          tokenEvent.Mint.String(),
+				"name":          tokenEvent.Name,
+				"symbol":        tokenEvent.Symbol,
+				"worker_target": workerIndex,
+				"total_workers": len(a.tokenWorkers),
+				"discovered":    a.processingStats.TokensDiscovered,
+			}).Info("🎯 New token discovered - routing to worker")
+
 			// Distribute tokens round-robin to workers
 			select {
 			case a.tokenWorkers[workerIndex] <- tokenEvent:
+				a.logger.WithFields(map[string]interface{}{
+					"worker_id": workerIndex,
+					"mint":      tokenEvent.Mint.String(),
+				}).Debug("✅ Token sent to worker")
 				workerIndex = (workerIndex + 1) % len(a.tokenWorkers)
+
 			default:
-				a.logger.Warn("⚠️ All workers busy, dropping token")
+				// Worker busy, try next worker
+				originalWorker := workerIndex
+				for i := 0; i < len(a.tokenWorkers); i++ {
+					workerIndex = (workerIndex + 1) % len(a.tokenWorkers)
+					select {
+					case a.tokenWorkers[workerIndex] <- tokenEvent:
+						a.logger.WithFields(map[string]interface{}{
+							"worker_id":       workerIndex,
+							"original_worker": originalWorker,
+							"mint":            tokenEvent.Mint.String(),
+						}).Debug("✅ Token sent to alternate worker")
+						goto tokenSent
+					default:
+						continue
+					}
+				}
+
+				// All workers busy
+				a.logger.WithFields(map[string]interface{}{
+					"mint":         tokenEvent.Mint.String(),
+					"workers_busy": len(a.tokenWorkers),
+					"age_ms":       tokenEvent.GetAgeMs(),
+				}).Warn("⚠️ All workers busy, dropping token")
+
+			tokenSent:
 			}
 
 		case <-statsTicker.C:

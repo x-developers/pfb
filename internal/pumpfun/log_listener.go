@@ -17,9 +17,6 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const CREATE_DISCRIMINATOR uint64 = 8530921459188068891
-
-// LogListener listens for new pump.fun tokens via program logs
 type LogListener struct {
 	wsClient      *client.WSClient
 	rpcClient     *client.Client
