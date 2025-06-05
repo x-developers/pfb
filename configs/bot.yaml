@@ -7,6 +7,32 @@ rpc_api_key: "${PUMPBOT_RPC_API_KEY:-}"
 # Wallet settings (REQUIRED)
 private_key: "${PUMPBOT_PRIVATE_KEY}"
 
+# ========================================
+# 🎧 LISTENER CONFIGURATION
+# ========================================
+listener:
+  # Listener type: "logs", "blocks", or "multi"
+  type: "${PUMPBOT_LISTENER_TYPE:-logs}"
+
+  # Buffer size for token events
+  buffer_size: ${PUMPBOT_LISTENER_BUFFER_SIZE:-100}
+
+  # Multi-listener settings (only used when type is "multi")
+  enable_log_listener: ${PUMPBOT_LISTENER_ENABLE_LOG:-true}
+  enable_block_listener: ${PUMPBOT_LISTENER_ENABLE_BLOCK:-false}
+
+  # Performance settings
+  parallel_processing: ${PUMPBOT_LISTENER_PARALLEL_PROCESSING:-false}
+  worker_count: ${PUMPBOT_LISTENER_WORKER_COUNT:-1}
+
+  # Duplicate filtering
+  enable_duplicate_filter: ${PUMPBOT_LISTENER_ENABLE_DUPLICATE_FILTER:-true}
+  duplicate_filter_ttl: ${PUMPBOT_LISTENER_DUPLICATE_FILTER_TTL:-300}
+
+  # Debug options
+  log_raw_events: ${PUMPBOT_LISTENER_LOG_RAW_EVENTS:-false}
+  log_timing: ${PUMPBOT_LISTENER_LOG_TIMING:-false}
+
 trading:
   buy_amount_sol: ${PUMPBOT_TRADING_BUY_AMOUNT_SOL:-0.01}
   buy_amount_tokens: ${PUMPBOT_TRADING_BUY_AMOUNT_TOKENS:-1000000}
@@ -94,6 +120,36 @@ advanced:
   metrics_port: ${PUMPBOT_ADVANCED_METRICS_PORT:-8080}
 
 # ========================================
+# 🎧 LISTENER CONFIGURATION EXAMPLES
+# ========================================
+
+# 📊 Logs Listener Only (Default - Fast & Efficient):
+# export PUMPBOT_LISTENER_TYPE="logs"
+# export PUMPBOT_LISTENER_BUFFER_SIZE="100"
+
+# 🏗️ Blocks Listener Only (More Comprehensive):
+# export PUMPBOT_LISTENER_TYPE="blocks"
+# export PUMPBOT_LISTENER_BUFFER_SIZE="200"
+
+# 🔄 Multi-Listener (Both logs and blocks - Maximum Coverage):
+# export PUMPBOT_LISTENER_TYPE="multi"
+# export PUMPBOT_LISTENER_ENABLE_LOG="true"
+# export PUMPBOT_LISTENER_ENABLE_BLOCK="true"
+# export PUMPBOT_LISTENER_ENABLE_DUPLICATE_FILTER="true"
+# export PUMPBOT_LISTENER_BUFFER_SIZE="300"
+
+# ⚡ High-Performance Listener Setup:
+# export PUMPBOT_LISTENER_TYPE="logs"
+# export PUMPBOT_LISTENER_PARALLEL_PROCESSING="true"
+# export PUMPBOT_LISTENER_WORKER_COUNT="3"
+# export PUMPBOT_LISTENER_BUFFER_SIZE="500"
+
+# 🔍 Debug Listener Setup:
+# export PUMPBOT_LISTENER_LOG_RAW_EVENTS="true"
+# export PUMPBOT_LISTENER_LOG_TIMING="true"
+# export PUMPBOT_LOGGING_LEVEL="debug"
+
+# ========================================
 # 🚀 NEW TRADING MODES EXAMPLES
 # ========================================
 
@@ -141,6 +197,11 @@ advanced:
 # - Check token decimals before setting amount
 # - Token-based trading bypasses wallet balance checks
 
+# LISTENER_TYPE recommendations:
+# - "logs": Fastest, most efficient, catches tokens immediately
+# - "blocks": More comprehensive, confirmed transactions only
+# - "multi": Maximum coverage but higher resource usage
+
 # ========================================
 # ⚠️ WARNINGS FOR NEW FEATURES
 # ========================================
@@ -149,5 +210,7 @@ advanced:
 # ⚠️ Sell delay is now in MILLISECONDS (was seconds)
 # ⚠️ Token-based trading bypasses balance validation
 # ⚠️ Very short sell delays (100-200ms) are extremely risky
+# ⚠️ Multi-listener mode increases resource usage
+# ⚠️ Block listener may have higher latency than logs listener
 # ⚠️ Always test on devnet first with small amounts
 # ⚠️ Monitor your trades closely with auto-sell enabled

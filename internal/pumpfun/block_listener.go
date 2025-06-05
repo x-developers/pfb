@@ -38,6 +38,9 @@ type BlockListener struct {
 	pumpFunProgramID solana.PublicKey
 }
 
+// Ensure BlockListener implements ListenerInterface
+var _ ListenerInterface = (*BlockListener)(nil)
+
 // NewBlockListener creates a new block-based listener
 func NewBlockListener(
 	wsClient *client.WSClient,

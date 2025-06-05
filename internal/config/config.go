@@ -20,6 +20,8 @@ type Config struct {
 	WSUrl     string `mapstructure:"ws_url" yaml:"ws_url"`
 	RPCAPIKey string `mapstructure:"rpc_api_key" yaml:"rpc_api_key"`
 
+	Listener ListenerConfig `mapstructure:"listener" yaml:"listener"`
+
 	// JITO settings
 	JITO JitoConfig `mapstructure:"jito" yaml:"jito"`
 
@@ -40,6 +42,39 @@ type Config struct {
 
 	// Ultra Fast Mode settings
 	UltraFast UltraFastConfig `mapstructure:"ultra_fast" yaml:"ultra_fast"`
+}
+
+type ListenerType string
+
+const (
+	LogsListenerType   ListenerType = "logs"
+	BlocksListenerType ListenerType = "blocks"
+	MultiListenerType  ListenerType = "multi"
+)
+
+// ListenerConfig contains listener-specific configuration
+type ListenerConfig struct {
+	// Listener type selection
+	Type ListenerType `mapstructure:"type" yaml:"type"`
+
+	// Buffer size for token events
+	BufferSize int `mapstructure:"buffer_size" yaml:"buffer_size"`
+
+	// Multi-listener configuration
+	EnableLogListener   bool `mapstructure:"enable_log_listener" yaml:"enable_log_listener"`
+	EnableBlockListener bool `mapstructure:"enable_block_listener" yaml:"enable_block_listener"`
+
+	// Performance settings
+	ParallelProcessing bool `mapstructure:"parallel_processing" yaml:"parallel_processing"`
+	WorkerCount        int  `mapstructure:"worker_count" yaml:"worker_count"`
+
+	// Filtering options
+	EnableDuplicateFilter bool `mapstructure:"enable_duplicate_filter" yaml:"enable_duplicate_filter"`
+	DuplicateFilterTTL    int  `mapstructure:"duplicate_filter_ttl" yaml:"duplicate_filter_ttl"` // seconds
+
+	// Debug options
+	LogRawEvents bool `mapstructure:"log_raw_events" yaml:"log_raw_events"`
+	LogTiming    bool `mapstructure:"log_timing" yaml:"log_timing"`
 }
 
 // TradingConfig contains trading-related settings
@@ -158,6 +193,7 @@ func LoadConfig(configPath string, envPath string) (*Config, error) {
 
 	// Set default values
 	setDefaults()
+	setListenerDefaults()
 	setDefaultsUltraFast()
 
 	// Set config file path
@@ -180,6 +216,7 @@ func LoadConfig(configPath string, envPath string) (*Config, error) {
 
 	// Manually bind environment variables that viper might miss
 	bindEnvVariables()
+	bindListenerEnvVariables()
 	bindUltraFastEnvVariables()
 
 	// Read config file
@@ -216,6 +253,10 @@ func LoadConfig(configPath string, envPath string) (*Config, error) {
 
 	// Validate and post-process config
 	if err := validateConfig(config); err != nil {
+		return nil, fmt.Errorf("config validation failed: %w", err)
+	}
+
+	if err := validateListenerConfig(config); err != nil {
 		return nil, fmt.Errorf("config validation failed: %w", err)
 	}
 
@@ -922,6 +963,116 @@ func bindUltraFastEnvVariables() {
 	viper.BindEnv("ultra_fast.log_latency", "PUMPBOT_ULTRA_FAST_LOG_LATENCY")
 	viper.BindEnv("ultra_fast.max_tokens_per_second", "PUMPBOT_ULTRA_FAST_MAX_TOKENS_PER_SECOND")
 	viper.BindEnv("ultra_fast.immediate_execution", "PUMPBOT_ULTRA_FAST_IMMEDIATE_EXECUTION")
+}
+
+func setListenerDefaults() {
+	// Listener defaults
+	viper.SetDefault("listener.type", "logs")
+	viper.SetDefault("listener.buffer_size", 100)
+	viper.SetDefault("listener.enable_log_listener", true)
+	viper.SetDefault("listener.enable_block_listener", false)
+	viper.SetDefault("listener.parallel_processing", false)
+	viper.SetDefault("listener.worker_count", 1)
+	viper.SetDefault("listener.enable_duplicate_filter", true)
+	viper.SetDefault("listener.duplicate_filter_ttl", 300) // 5 minutes
+	viper.SetDefault("listener.log_raw_events", false)
+	viper.SetDefault("listener.log_timing", false)
+}
+
+// Add to bindEnvVariables function:
+func bindListenerEnvVariables() {
+	// Listener variables
+	viper.BindEnv("listener.type", "PUMPBOT_LISTENER_TYPE")
+	viper.BindEnv("listener.buffer_size", "PUMPBOT_LISTENER_BUFFER_SIZE")
+	viper.BindEnv("listener.enable_log_listener", "PUMPBOT_LISTENER_ENABLE_LOG")
+	viper.BindEnv("listener.enable_block_listener", "PUMPBOT_LISTENER_ENABLE_BLOCK")
+	viper.BindEnv("listener.parallel_processing", "PUMPBOT_LISTENER_PARALLEL_PROCESSING")
+	viper.BindEnv("listener.worker_count", "PUMPBOT_LISTENER_WORKER_COUNT")
+	viper.BindEnv("listener.enable_duplicate_filter", "PUMPBOT_LISTENER_ENABLE_DUPLICATE_FILTER")
+	viper.BindEnv("listener.duplicate_filter_ttl", "PUMPBOT_LISTENER_DUPLICATE_FILTER_TTL")
+	viper.BindEnv("listener.log_raw_events", "PUMPBOT_LISTENER_LOG_RAW_EVENTS")
+	viper.BindEnv("listener.log_timing", "PUMPBOT_LISTENER_LOG_TIMING")
+}
+
+// Add validation to validateConfig function:
+func validateListenerConfig(config *Config) error {
+	// Validate listener type
+	switch config.Listener.Type {
+	case LogsListenerType, BlocksListenerType, MultiListenerType:
+		// Valid types
+	default:
+		return fmt.Errorf("invalid listener type: %s (must be 'logs', 'blocks', or 'multi')", config.Listener.Type)
+	}
+
+	// Validate buffer size
+	if config.Listener.BufferSize < 1 || config.Listener.BufferSize > 10000 {
+		return fmt.Errorf("listener buffer_size must be between 1 and 10000, got %d", config.Listener.BufferSize)
+	}
+
+	// Validate multi-listener configuration
+	if config.Listener.Type == MultiListenerType {
+		if !config.Listener.EnableLogListener && !config.Listener.EnableBlockListener {
+			return fmt.Errorf("multi-listener requires at least one listener to be enabled")
+		}
+	}
+
+	// Validate worker count
+	if config.Listener.WorkerCount < 1 || config.Listener.WorkerCount > 100 {
+		return fmt.Errorf("listener worker_count must be between 1 and 100, got %d", config.Listener.WorkerCount)
+	}
+
+	// Validate duplicate filter TTL
+	if config.Listener.DuplicateFilterTTL < 60 || config.Listener.DuplicateFilterTTL > 3600 {
+		return fmt.Errorf("listener duplicate_filter_ttl must be between 60 and 3600 seconds, got %d", config.Listener.DuplicateFilterTTL)
+	}
+
+	return nil
+}
+
+// Helper methods for Config
+func (c *Config) GetListenerType() ListenerType {
+	return c.Listener.Type
+}
+
+func (c *Config) IsMultiListener() bool {
+	return c.Listener.Type == MultiListenerType
+}
+
+func (c *Config) ShouldUseLogListener() bool {
+	switch c.Listener.Type {
+	case LogsListenerType:
+		return true
+	case MultiListenerType:
+		return c.Listener.EnableLogListener
+	default:
+		return false
+	}
+}
+
+func (c *Config) ShouldUseBlockListener() bool {
+	switch c.Listener.Type {
+	case BlocksListenerType:
+		return true
+	case MultiListenerType:
+		return c.Listener.EnableBlockListener
+	default:
+		return false
+	}
+}
+
+func (c *Config) GetListenerBufferSize() int {
+	if c.Listener.BufferSize > 0 {
+		return c.Listener.BufferSize
+	}
+	return 100 // default
+}
+
+func (c *Config) ShouldFilterDuplicates() bool {
+	return c.Listener.EnableDuplicateFilter
+}
+
+func (c *Config) GetDuplicateFilterTTL() time.Duration {
+	return time.Duration(c.Listener.DuplicateFilterTTL) * time.Second
 }
 
 // Helper functions for environment variables

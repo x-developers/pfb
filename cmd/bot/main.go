@@ -1,3 +1,4 @@
+// cmd/bot/main.go
 package main
 
 import (
@@ -40,6 +41,11 @@ var (
 	configFile   = flag.String("config", "", "Path to config file")
 	envFile      = flag.String("env", "", "Path to .env file")
 
+	// Listener flags
+	listenerType        = flag.String("listener", "", "Listener type (logs/blocks/multi)")
+	enableLogListener   = flag.Bool("enable-logs", false, "Enable logs listener (for multi-listener)")
+	enableBlockListener = flag.Bool("enable-blocks", false, "Enable blocks listener (for multi-listener)")
+
 	// Performance flags
 	skipValidation  = flag.Bool("skip-validation", false, "Skip validation checks for maximum speed")
 	noConfirmation  = flag.Bool("no-confirm", false, "Don't wait for transaction confirmation")
@@ -52,7 +58,7 @@ var (
 	benchmark  = flag.Bool("benchmark", false, "Enable benchmark mode with detailed timing")
 )
 
-// App with simplified structure without Jito
+// App with listener factory integration
 type App struct {
 	config       *config.Config
 	logger       *logger.Logger
@@ -60,11 +66,15 @@ type App struct {
 	solanaClient *client.Client
 	wsClient     *client.WSClient
 	wallet       *wallet.Wallet
-	listener     *pumpfun.Listener
-	trader       *pumpfun.Trader
-	priceCalc    *pumpfun.PriceCalculator
-	ctx          context.Context
-	cancel       context.CancelFunc
+
+	// Listener management
+	listenerFactory *pumpfun.ListenerFactory
+	listener        pumpfun.ListenerInterface
+
+	trader    *pumpfun.Trader
+	priceCalc *pumpfun.PriceCalculator
+	ctx       context.Context
+	cancel    context.CancelFunc
 
 	// Ultra-Fast Mode components
 	tokenWorkers    []chan *pumpfun.TokenEvent
@@ -131,6 +141,27 @@ func applyCliOverrides(cfg *config.Config) {
 		cfg.Trading.AutoSell = false // Disable auto-sell in hold mode
 	}
 
+	// Listener overrides
+	if *listenerType != "" {
+		switch *listenerType {
+		case "logs":
+			cfg.Listener.Type = config.LogsListenerType
+		case "blocks":
+			cfg.Listener.Type = config.BlocksListenerType
+		case "multi":
+			cfg.Listener.Type = config.MultiListenerType
+		default:
+			log.Printf("Warning: Invalid listener type '%s', using default", *listenerType)
+		}
+	}
+
+	if *enableLogListener {
+		cfg.Listener.EnableLogListener = true
+	}
+	if *enableBlockListener {
+		cfg.Listener.EnableBlockListener = true
+	}
+
 	// Auto-sell overrides - UPDATED for milliseconds
 	if *autoSell {
 		cfg.Trading.AutoSell = true
@@ -183,6 +214,12 @@ func applyCliOverrides(cfg *config.Config) {
 	if cfg.Trading.SellDelayMs < 100 {
 		log.Printf("⚠️ WARNING: Very short sell delay (%dms) is extremely risky!", cfg.Trading.SellDelayMs)
 	}
+
+	// Listener warnings
+	if cfg.Listener.Type == config.MultiListenerType && !cfg.Listener.EnableLogListener && !cfg.Listener.EnableBlockListener {
+		log.Println("Warning: Multi-listener requires at least one listener to be enabled, enabling logs listener")
+		cfg.Listener.EnableLogListener = true
+	}
 }
 
 func initializeLogger(cfg *config.Config) *logger.Logger {
@@ -203,7 +240,7 @@ func initializeLogger(cfg *config.Config) *logger.Logger {
 	return log
 }
 
-// NewApp creates a new application instance without Jito
+// NewApp creates a new application instance with listener factory
 func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -237,9 +274,24 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 		}
 	}
 
+	// Initialize listener factory
+	listenerFactory := pumpfun.NewListenerFactory(wsClient, solanaClient, cfg, log)
+
+	// Validate listener support
+	if err := listenerFactory.ValidateListenerSupport(); err != nil {
+		cancel()
+		return nil, fmt.Errorf("listener validation failed: %w", err)
+	}
+
+	// Create listener based on configuration and strategy
+	listener, err := listenerFactory.CreateStrategyListener()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create listener: %w", err)
+	}
+
 	// Initialize components
 	priceCalc := pumpfun.NewPriceCalculator(solanaClient)
-	listener := pumpfun.NewListener(wsClient, solanaClient, log, cfg)
 
 	// Initialize trader (simplified without Jito)
 	var trader *pumpfun.Trader
@@ -249,17 +301,18 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 	}
 
 	app := &App{
-		config:       cfg,
-		logger:       log,
-		tradeLogger:  tradeLogger,
-		solanaClient: solanaClient,
-		wsClient:     wsClient,
-		wallet:       walletInstance,
-		listener:     listener,
-		trader:       trader,
-		priceCalc:    priceCalc,
-		ctx:          ctx,
-		cancel:       cancel,
+		config:          cfg,
+		logger:          log,
+		tradeLogger:     tradeLogger,
+		solanaClient:    solanaClient,
+		wsClient:        wsClient,
+		wallet:          walletInstance,
+		listenerFactory: listenerFactory,
+		listener:        listener,
+		trader:          trader,
+		priceCalc:       priceCalc,
+		ctx:             ctx,
+		cancel:          cancel,
 		processingStats: &ProcessingStats{
 			FastestProcessingMs: 999999,
 			WorkerUtilization:   make(map[int]float64),
@@ -285,6 +338,9 @@ func (a *App) Start() error {
 		mode += " + AUTO-SELL"
 	}
 
+	// Show listener type
+	mode += fmt.Sprintf(" + %s-LISTENER", strings.ToUpper(string(a.config.GetListenerType())))
+
 	// Show trading mode
 	tradingMode := "SOL-BASED"
 	if a.config.IsTokenBasedTrading() {
@@ -293,6 +349,16 @@ func (a *App) Start() error {
 	mode += fmt.Sprintf(" (%s)", tradingMode)
 
 	a.logger.Info(fmt.Sprintf("🚀 Starting Pump.fun Bot v%s (%s MODE)", Version, mode))
+
+	// Log listener configuration
+	a.logger.WithFields(map[string]interface{}{
+		"listener_type":         a.config.GetListenerType(),
+		"listener_buffer_size":  a.config.GetListenerBufferSize(),
+		"enable_log_listener":   a.config.ShouldUseLogListener(),
+		"enable_block_listener": a.config.ShouldUseBlockListener(),
+		"duplicate_filter":      a.config.ShouldFilterDuplicates(),
+		"filter_ttl_seconds":    a.config.Listener.DuplicateFilterTTL,
+	}).Info("🎧 Listener configuration")
 
 	// Log auto-sell configuration
 	if a.config.Trading.AutoSell {
@@ -433,12 +499,14 @@ func (a *App) ultraFastWorker(workerID int, tokenChan <-chan *pumpfun.TokenEvent
 func (a *App) processTokenUltraFast(tokenEvent *pumpfun.TokenEvent, workerID int) {
 	discoveryTime := time.Now()
 
-	// Log discovery with worker ID
+	// Log discovery with worker ID and listener source
 	a.logger.WithFields(map[string]interface{}{
 		"mint":      tokenEvent.Mint,
 		"name":      tokenEvent.Name,
 		"symbol":    tokenEvent.Symbol,
 		"worker_id": workerID,
+		"source":    tokenEvent.Source,
+		"confirmed": tokenEvent.IsConfirmed,
 	}).Info("🎯 New token discovered")
 
 	// Ultra-fast filtering (minimal checks)
@@ -474,6 +542,7 @@ func (a *App) executeUltraFastTrade(tokenEvent *pumpfun.TokenEvent, discoveryTim
 		a.logger.WithFields(map[string]interface{}{
 			"worker_id":        workerID,
 			"discovery_lag_ms": discoveryLag.Milliseconds(),
+			"source":           tokenEvent.Source,
 		}).Info("🛒 Executing ultra-fast trade")
 	} else {
 		a.logger.WithField("worker_id", workerID).Info("🛒 Executing buy transaction")
@@ -493,6 +562,7 @@ func (a *App) executeUltraFastTrade(tokenEvent *pumpfun.TokenEvent, discoveryTim
 			"total_time_ms":    totalTime.Milliseconds(),
 			"trade_time_ms":    tradeTime.Milliseconds(),
 			"discovery_lag_ms": discoveryLag.Milliseconds(),
+			"source":           tokenEvent.Source,
 		}).Error("❌ Ultra-fast trade failed")
 	} else if result.Success {
 		a.logger.WithFields(map[string]interface{}{
@@ -502,6 +572,7 @@ func (a *App) executeUltraFastTrade(tokenEvent *pumpfun.TokenEvent, discoveryTim
 			"total_time_ms":    totalTime.Milliseconds(),
 			"trade_time_ms":    tradeTime.Milliseconds(),
 			"discovery_lag_ms": discoveryLag.Milliseconds(),
+			"source":           tokenEvent.Source,
 			"ultra_fast":       true,
 		}).Info("⚡⚡ ULTRA-FAST TRADE SUCCESS")
 	}
@@ -600,7 +671,7 @@ func (a *App) runStandardMode() error {
 	}
 }
 
-// logUltraFastStats logs performance statistics
+// logUltraFastStats logs performance statistics including listener stats
 func (a *App) logUltraFastStats() {
 	stats := map[string]interface{}{
 		"tokens_discovered":     a.processingStats.TokensDiscovered,
@@ -616,6 +687,12 @@ func (a *App) logUltraFastStats() {
 		for k, v := range traderStats {
 			stats["trader_"+k] = v
 		}
+	}
+
+	// Add listener stats
+	listenerStats := a.listener.GetStats()
+	for k, v := range listenerStats {
+		stats["listener_"+k] = v
 	}
 
 	// Add worker utilization
@@ -644,6 +721,12 @@ func (a *App) logStandardStats() {
 		for k, v := range traderStats {
 			stats["trader_"+k] = v
 		}
+	}
+
+	// Add listener stats
+	listenerStats := a.listener.GetStats()
+	for k, v := range listenerStats {
+		stats["listener_"+k] = v
 	}
 
 	// Add blockhash cache info
@@ -684,6 +767,11 @@ func (a *App) shutdown() {
 		close(workerChan)
 	}
 
+	// Stop listener
+	if a.listener != nil {
+		a.listener.Stop()
+	}
+
 	// Stop trader
 	if a.trader != nil {
 		a.trader.Stop()
@@ -691,12 +779,23 @@ func (a *App) shutdown() {
 
 	// Log final statistics
 	if a.config.UltraFast.Enabled {
-		a.logger.WithFields(map[string]interface{}{
+		finalStats := map[string]interface{}{
 			"total_discovered":      a.processingStats.TokensDiscovered,
 			"total_processed":       a.processingStats.TokensProcessed,
 			"fastest_processing_ms": a.processingStats.FastestProcessingMs,
 			"average_latency_ms":    a.processingStats.AverageLatency,
-		}).Info("📊 Final Ultra-Fast Statistics")
+			"listener_type":         a.config.GetListenerType(),
+		}
+
+		// Add final listener stats
+		if a.listener != nil {
+			listenerStats := a.listener.GetStats()
+			for k, v := range listenerStats {
+				finalStats["final_listener_"+k] = v
+			}
+		}
+
+		a.logger.WithFields(finalStats).Info("📊 Final Ultra-Fast Statistics")
 	}
 
 	// Log blockhash cache final status
