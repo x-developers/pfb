@@ -47,7 +47,7 @@ func main() {
 
 	// Test RPC connection first
 	fmt.Println("1️⃣ Testing RPC Connection...")
-	rpcClient := solana.NewClient(solana.ClientConfig{
+	rpcClient := client.NewClient(client.ClientConfig{
 		Endpoint: rpcUrl,
 		Timeout:  30 * time.Second,
 	}, testLogger.Logger)
@@ -64,7 +64,7 @@ func main() {
 
 	// Test WebSocket connection
 	fmt.Println("2️⃣ Testing WebSocket Connection...")
-	wsClient := solana.NewWSClient(wsUrl, testLogger.Logger)
+	wsClient := client.NewWSClient(wsUrl, testLogger.Logger)
 
 	err = wsClient.Connect()
 	if err != nil {
@@ -87,7 +87,7 @@ func main() {
 	logHandler := func(data interface{}) error {
 		notificationCount++
 
-		notification, ok := data.(solana.LogsNotification)
+		notification, ok := data.(client.LogsNotification)
 		if !ok {
 			fmt.Printf("❌ Invalid notification format: %T\n", data)
 			return fmt.Errorf("invalid notification format")

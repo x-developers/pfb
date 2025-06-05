@@ -1,9 +1,10 @@
-package solana
+package client
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/gagliardetto/solana-go/rpc/jsonrpc"
 	"sync"
 	"time"
 
@@ -47,12 +48,12 @@ type EventHandler func(data interface{}) error
 
 // Enhanced WebSocket message with debugging
 type WSMessage struct {
-	JSONRPC string      `json:"jsonrpc"`
-	ID      *int        `json:"id,omitempty"`
-	Method  string      `json:"method,omitempty"`
-	Params  interface{} `json:"params,omitempty"`
-	Result  interface{} `json:"result,omitempty"`
-	Error   *RPCError   `json:"error,omitempty"`
+	JSONRPC string            `json:"jsonrpc"`
+	ID      *int              `json:"id,omitempty"`
+	Method  string            `json:"method,omitempty"`
+	Params  interface{}       `json:"params,omitempty"`
+	Result  interface{}       `json:"result,omitempty"`
+	Error   *jsonrpc.RPCError `json:"error,omitempty"`
 }
 
 // BlockNotification represents a block notification

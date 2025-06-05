@@ -4,15 +4,15 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"github.com/blocto/solana-go-sdk/common"
+	"pump-fun-bot-go/internal/client"
 	"strings"
 	"time"
 
 	"pump-fun-bot-go/internal/config"
 	"pump-fun-bot-go/internal/logger"
-	"pump-fun-bot-go/internal/solana"
 	"pump-fun-bot-go/pkg/utils"
 
+	"github.com/gagliardetto/solana-go"
 	"github.com/mr-tron/base58"
 	"github.com/sirupsen/logrus"
 )
@@ -21,22 +21,22 @@ const CREATE_DISCRIMINATOR uint64 = 8530921459188068891
 
 // TokenEvent represents a new token creation event with timing information
 type TokenEvent struct {
-	Signature              string            `json:"signature"`
-	Slot                   uint64            `json:"slot"`
-	BlockTime              int64             `json:"block_time"`
-	Mint                   *common.PublicKey `json:"mint"`
-	BondingCurve           *common.PublicKey `json:"bonding_curve"`
-	AssociatedBondingCurve *common.PublicKey `json:"associated_bonding_curve"`
-	Creator                *common.PublicKey `json:"creator"`
-	CreatorVault           *common.PublicKey `json:"creator_vault"`
-	User                   *common.PublicKey `json:"user"`
-	Name                   string            `json:"name"`
-	Symbol                 string            `json:"symbol"`
-	URI                    string            `json:"uri"`
-	InitialPrice           float64           `json:"initial_price"`
-	Timestamp              time.Time         `json:"timestamp"`           // NEW: Время обнаружения токена
-	DiscoveredAt           time.Time         `json:"discovered_at"`       // NEW: Время когда токен был обработан
-	ProcessingDelayMs      int64             `json:"processing_delay_ms"` // NEW: Задержка обработки в мс
+	Signature              string           `json:"signature"`
+	Slot                   uint64           `json:"slot"`
+	BlockTime              int64            `json:"block_time"`
+	Mint                   solana.PublicKey `json:"mint"`
+	BondingCurve           solana.PublicKey `json:"bonding_curve"`
+	AssociatedBondingCurve solana.PublicKey `json:"associated_bonding_curve"`
+	Creator                solana.PublicKey `json:"creator"`
+	CreatorVault           solana.PublicKey `json:"creator_vault"`
+	User                   solana.PublicKey `json:"user"`
+	Name                   string           `json:"name"`
+	Symbol                 string           `json:"symbol"`
+	URI                    string           `json:"uri"`
+	InitialPrice           float64          `json:"initial_price"`
+	Timestamp              time.Time        `json:"timestamp"`           // NEW: Время обнаружения токена
+	DiscoveredAt           time.Time        `json:"discovered_at"`       // NEW: Время когда токен был обработан
+	ProcessingDelayMs      int64            `json:"processing_delay_ms"` // NEW: Задержка обработки в мс
 }
 
 // GetAge returns the age of the token since discovery
@@ -67,8 +67,8 @@ func (te *TokenEvent) ShouldWaitForDelay(cfg *config.Config) bool {
 
 // Listener listens for new pump.fun tokens
 type Listener struct {
-	wsClient      *solana.WSClient
-	rpcClient     *solana.Client
+	wsClient      *client.WSClient
+	rpcClient     *client.Client
 	logger        *logger.Logger
 	config        *config.Config
 	tokenChan     chan *TokenEvent
@@ -85,7 +85,7 @@ type Listener struct {
 }
 
 // NewListener creates a new pump.fun listener
-func NewListener(wsClient *solana.WSClient, rpcClient *solana.Client, logger *logger.Logger, cfg *config.Config) *Listener {
+func NewListener(wsClient *client.WSClient, rpcClient *client.Client, logger *logger.Logger, cfg *config.Config) *Listener {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &Listener{
@@ -148,7 +148,7 @@ func (l *Listener) GetStats() map[string]interface{} {
 func (l *Listener) handleLogsNotification(data interface{}) error {
 	processingStart := time.Now() // Start timing immediately
 
-	notification, ok := data.(solana.LogsNotification)
+	notification, ok := data.(client.LogsNotification)
 	if !ok {
 		return fmt.Errorf("invalid logs notification format")
 	}
@@ -192,13 +192,13 @@ func (l *Listener) handleLogsNotification(data interface{}) error {
 
 	// Enhanced logging with timing information
 	l.logger.WithFields(logrus.Fields{
-		"mint":                     tokenInfo.Mint,
+		"mint":                     tokenInfo.Mint.String(),
 		"name":                     tokenInfo.Name,
 		"symbol":                   tokenInfo.Symbol,
-		"creator":                  tokenInfo.Creator,
-		"creator_vault":            tokenInfo.CreatorVault,
-		"bonding_curve":            tokenInfo.BondingCurve,
-		"associated_bonding_curve": tokenInfo.AssociatedBondingCurve,
+		"creator":                  tokenInfo.Creator.String(),
+		"creator_vault":            tokenInfo.CreatorVault.String(),
+		"bonding_curve":            tokenInfo.BondingCurve.String(),
+		"associated_bonding_curve": tokenInfo.AssociatedBondingCurve.String(),
 		"processing_ms":            processingMs,
 		"discovered_at":            tokenInfo.DiscoveredAt.Format("15:04:05.000"),
 		"timestamp":                tokenInfo.Timestamp.Format("15:04:05.000"),
@@ -320,13 +320,13 @@ func (l *Listener) extractTokenFromData(dataStr string, signature string, slot u
 		offset += int(l)
 		return val, nil
 	}
-	readPubKey := func() (*common.PublicKey, error) {
+	readPubKey := func() (solana.PublicKey, error) {
 		if offset+32 > len(data) {
-			return nil, fmt.Errorf("not enough data for pubkey")
+			return solana.PublicKey{}, fmt.Errorf("not enough data for pubkey")
 		}
-		val := common.PublicKeyFromBytes(data[offset : offset+32])
+		val := solana.PublicKeyFromBytes(data[offset : offset+32])
 		offset += 32
-		return &val, nil
+		return val, nil
 	}
 
 	if tokenEvent.Name, err = readString(); err != nil {
@@ -350,10 +350,10 @@ func (l *Listener) extractTokenFromData(dataStr string, signature string, slot u
 	if tokenEvent.Creator, err = readPubKey(); err != nil {
 		return nil, err
 	}
-	if tokenEvent.CreatorVault, _, err = l.pdaDerivation.DeriveCreatorVault(*tokenEvent.Creator); err != nil {
+	if tokenEvent.CreatorVault, _, err = l.pdaDerivation.DeriveCreatorVault(tokenEvent.Creator); err != nil {
 		return nil, err
 	}
-	if tokenEvent.AssociatedBondingCurve, _, err = l.pdaDerivation.DeriveAssociatedBondingCurve(*tokenEvent.Mint, *tokenEvent.BondingCurve); err != nil {
+	if tokenEvent.AssociatedBondingCurve, _, err = l.pdaDerivation.DeriveAssociatedBondingCurve(tokenEvent.Mint, tokenEvent.BondingCurve); err != nil {
 		return nil, err
 	}
 

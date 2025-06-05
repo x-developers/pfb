@@ -1,7 +1,7 @@
 package utils
 
 import (
-	"github.com/blocto/solana-go-sdk/common"
+	"github.com/gagliardetto/solana-go"
 	"pump-fun-bot-go/internal/config"
 )
 
@@ -12,26 +12,26 @@ func NewPumpFunPDADerivation() *PumpFunPDADerivation {
 	return &PumpFunPDADerivation{}
 }
 
-func (p *PumpFunPDADerivation) DeriveAssociatedBondingCurve(mint common.PublicKey, bondingCurve common.PublicKey) (*common.PublicKey, uint8, error) {
+func (p *PumpFunPDADerivation) DeriveAssociatedBondingCurve(mint solana.PublicKey, bondingCurve solana.PublicKey) (solana.PublicKey, uint8, error) {
 	seeds := [][]byte{
 		bondingCurve.Bytes(),
-		common.TokenProgramID.Bytes(),
+		//solana.TokenProgramID.Bytes(),
 		mint.Bytes(),
 	}
 
-	data, nonce, err := common.FindProgramAddress(seeds, common.SPLAssociatedTokenAccountProgramID)
+	data, nonce, err := solana.FindProgramAddress(seeds, solana.SPLAssociatedTokenAccountProgramID)
 
-	return &data, nonce, err
+	return data, nonce, err
 }
 
-func (p *PumpFunPDADerivation) DeriveCreatorVault(creator common.PublicKey) (*common.PublicKey, uint8, error) {
+func (p *PumpFunPDADerivation) DeriveCreatorVault(creator solana.PublicKey) (solana.PublicKey, uint8, error) {
 	seeds := [][]byte{
 		[]byte("creator-vault"),
 		creator.Bytes(),
 	}
 
-	programID := common.PublicKeyFromBytes(config.PumpFunProgramID)
-	data, nonce, err := common.FindProgramAddress(seeds, programID)
+	programID := solana.PublicKeyFromBytes(config.PumpFunProgramID)
+	data, nonce, err := solana.FindProgramAddress(seeds, programID)
 
-	return &data, nonce, err
+	return data, nonce, err
 }

@@ -2,38 +2,36 @@
 package pumpfun
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
-	"github.com/blocto/solana-go-sdk/program/associated_token_account"
+	"pump-fun-bot-go/internal/client"
 	"sync"
 	"time"
 
 	"pump-fun-bot-go/internal/config"
 	"pump-fun-bot-go/internal/logger"
-	"pump-fun-bot-go/internal/solana"
 	"pump-fun-bot-go/internal/wallet"
 
-	"github.com/blocto/solana-go-sdk/common"
-	"github.com/blocto/solana-go-sdk/types"
+	"github.com/gagliardetto/solana-go"
+	"github.com/gagliardetto/solana-go/programs/associated-token-account"
 )
 
 type Trader struct {
 	wallet    *wallet.Wallet
-	rpcClient *solana.Client
+	rpcClient *client.Client
 	logger    *logger.Logger
 	config    *config.Config
 
 	autoSeller *AutoSeller
 
 	// Pre-computed data for speed
-	precomputedInstructions  map[string]types.Instruction
-	priorityFeeInstruction   types.Instruction
-	computeBudgetInstruction types.Instruction
+	precomputedInstructions  map[string]solana.Instruction
+	priorityFeeInstruction   solana.Instruction
+	computeBudgetInstruction solana.Instruction
 
 	// Fast blockhash management
-	cachedBlockhash    string
+	cachedBlockhash    solana.Hash
 	blockhashTimestamp time.Time
 	blockhashMutex     sync.RWMutex
 
@@ -56,7 +54,7 @@ type Trader struct {
 
 func NewTrader(
 	wallet *wallet.Wallet,
-	rpcClient *solana.Client,
+	rpcClient *client.Client,
 	logger *logger.Logger,
 	config *config.Config,
 ) *Trader {
@@ -65,7 +63,7 @@ func NewTrader(
 		rpcClient:               rpcClient,
 		logger:                  logger,
 		config:                  config,
-		precomputedInstructions: make(map[string]types.Instruction),
+		precomputedInstructions: make(map[string]solana.Instruction),
 		fastestTrade:            time.Hour,
 		skipValidation:          config.Strategy.YoloMode,
 		startTime:               time.Now(),
@@ -91,7 +89,7 @@ func NewTrader(
 }
 
 // SetJitoClient sets the Jito client for auto-seller
-func (t *Trader) SetJitoClient(jitoClient *solana.JitoClient) {
+func (t *Trader) SetJitoClient(jitoClient *client.JitoClient) {
 	if t.autoSeller != nil {
 		t.autoSeller.SetJitoClient(jitoClient)
 	}
@@ -177,11 +175,11 @@ func (t *Trader) ShouldBuyToken(ctx context.Context, tokenEvent *TokenEvent) (bo
 	}
 
 	// Только самые базовые проверки для максимальной скорости
-	if tokenEvent.Mint == nil {
+	if tokenEvent.Mint.IsZero() {
 		return false, "ULTRA-FAST: invalid mint"
 	}
 
-	if tokenEvent.BondingCurve == nil {
+	if tokenEvent.BondingCurve.IsZero() {
 		return false, "ULTRA-FAST: invalid bonding curve"
 	}
 
@@ -238,14 +236,17 @@ func (t *Trader) scheduleAutoSell(tokenEvent *TokenEvent, purchaseResult *TradeR
 	t.autoSells++
 }
 
-// executeUltraFastBuy - основная логика быстрой покупки с поддержкой токенов
 func (t *Trader) executeUltraFastBuy(ctx context.Context, tokenEvent *TokenEvent, startTime time.Time) (*TradeResult, error) {
+
+	t.rpcClient.CreateATA(t.wallet.GetPublicKey(), t.wallet.GetAccount(), tokenEvent.Mint)
+
+	//t.logger.LogTokenEventDiscovery(tokenEvent)
 	instructions := t.createFastInstructionsWithTokenSupport(tokenEvent)
 
 	blockhash := t.getCachedBlockhash()
-	if blockhash == "" {
-		_blockhash, _ := t.rpcClient.GetLatestBlockhash(ctx)
-		blockhash = _blockhash
+	if blockhash.IsZero() {
+		recent, _ := t.rpcClient.GetLatestBlockhash(ctx)
+		blockhash = recent
 
 		//
 		//return &TradeResult{
@@ -255,14 +256,11 @@ func (t *Trader) executeUltraFastBuy(ctx context.Context, tokenEvent *TokenEvent
 		//}, fmt.Errorf("Empty cached blockhash queue. Skipping...")
 	}
 
-	transaction, err := types.NewTransaction(types.NewTransactionParam{
-		Signers: []types.Account{t.wallet.GetAccount()},
-		Message: types.NewMessage(types.NewMessageParam{
-			FeePayer:        t.wallet.GetPublicKey(),
-			RecentBlockhash: blockhash,
-			Instructions:    instructions,
-		}),
-	})
+	transaction, err := solana.NewTransaction(
+		instructions,
+		blockhash,
+		solana.TransactionPayer(t.wallet.GetPublicKey()),
+	)
 	if err != nil {
 		return &TradeResult{
 			Success:   false,
@@ -271,7 +269,27 @@ func (t *Trader) executeUltraFastBuy(ctx context.Context, tokenEvent *TokenEvent
 		}, err
 	}
 
-	signature, err := t.wallet.SendTransaction(ctx, transaction)
+	// Sign transaction
+
+	_, err = transaction.Sign(
+		func(key solana.PublicKey) *solana.PrivateKey {
+			if t.wallet.GetPublicKey().Equals(key) {
+				account := t.wallet.GetAccount()
+				return &account
+			}
+			return nil
+		},
+	)
+
+	if err != nil {
+		return &TradeResult{
+			Success:   false,
+			Error:     fmt.Sprintf("failed to sign transaction: %v", err),
+			TradeTime: time.Since(startTime).Milliseconds(),
+		}, err
+	}
+
+	signature, err := t.rpcClient.SendAndConfirmTransaction(ctx, transaction)
 	if err != nil {
 		return &TradeResult{
 			Success:   false,
@@ -327,21 +345,10 @@ func (t *Trader) executeUltraFastBuy(ctx context.Context, tokenEvent *TokenEvent
 }
 
 // NEW: createFastInstructionsWithTokenSupport - быстрое создание инструкций с поддержкой токенов
-func (t *Trader) createFastInstructionsWithTokenSupport(tokenEvent *TokenEvent) []types.Instruction {
-	instructions := make([]types.Instruction, 0, 4)
+func (t *Trader) createFastInstructionsWithTokenSupport(tokenEvent *TokenEvent) []solana.Instruction {
+	instructions := make([]solana.Instruction, 0, 4)
 
-	// Добавляем pre-computed инструкции
-	//if t.config.Trading.PriorityFee > 0 {
-	//	instructions = append(instructions, t.priorityFeeInstruction)
-	//}
-	//instructions = append(instructions, t.computeBudgetInstruction)
-
-	//params := &associated_token_account.CreateIdempotentParam{
-	//	Funder: t.wallet.GetPublicKey(),
-	//	Owner:  t.wallet.GetPublicKey(),
-	//	Mint:   *tokenEvent.Mint,
-	//	//AssociatedTokenAccount: common.PublicKey{},
-	//}
+	// Create ATA if needed
 	ataInstruction := t.createIdempotentAssociatedInstruction(tokenEvent)
 	instructions = append(instructions, ataInstruction)
 
@@ -351,41 +358,47 @@ func (t *Trader) createFastInstructionsWithTokenSupport(tokenEvent *TokenEvent) 
 	return instructions
 }
 
-func (t *Trader) createIdempotentAssociatedInstruction(tokenEvent *TokenEvent) types.Instruction {
-	userATA, _ := t.wallet.GetAssociatedTokenAddress(*tokenEvent.Mint)
-	params := &associated_token_account.CreateIdempotentParam{
-		Funder:                 t.wallet.GetPublicKey(),
-		Owner:                  t.wallet.GetPublicKey(),
-		Mint:                   *tokenEvent.Mint,
-		AssociatedTokenAccount: userATA,
-	}
-
-	return associated_token_account.CreateIdempotent(*params)
+func (t *Trader) createIdempotentAssociatedInstruction(tokenEvent *TokenEvent) solana.Instruction {
+	return associatedtokenaccount.NewCreateInstruction(
+		t.wallet.GetPublicKey(), // payer
+		t.wallet.GetPublicKey(), // wallet
+		tokenEvent.Mint,         // mint
+	).Build()
 }
 
 // NEW: createBuyInstructionWithTokenSupport - создание buy инструкции с поддержкой токенов
-func (t *Trader) createBuyInstructionWithTokenSupport(tokenEvent *TokenEvent) types.Instruction {
-	// Предполагаем что ATA уже существует или будет создан протоколом
-	userATA, _ := t.wallet.GetAssociatedTokenAddress(*tokenEvent.Mint)
+func (t *Trader) createBuyInstructionWithTokenSupport(tokenEvent *TokenEvent) solana.Instruction {
+	// Get ATA address
+	userATA, _ := t.wallet.GetAssociatedTokenAddress(tokenEvent.Mint)
 
-	return types.Instruction{
-		ProgramID: common.PublicKeyFromBytes(config.PumpFunProgramID),
-		Accounts: []types.AccountMeta{
-			{PubKey: common.PublicKeyFromBytes(config.PumpFunGlobal), IsSigner: false, IsWritable: false},
-			{PubKey: common.PublicKeyFromBytes(config.PumpFunFeeRecipient), IsSigner: false, IsWritable: true},
-			{PubKey: *tokenEvent.Mint, IsSigner: false, IsWritable: false},
-			{PubKey: *tokenEvent.BondingCurve, IsSigner: false, IsWritable: true},
-			{PubKey: *tokenEvent.AssociatedBondingCurve, IsSigner: false, IsWritable: true},
-			{PubKey: userATA, IsSigner: false, IsWritable: true},
-			{PubKey: t.wallet.GetPublicKey(), IsSigner: true, IsWritable: true},
-			{PubKey: common.SystemProgramID, IsSigner: false, IsWritable: false},
-			{PubKey: common.TokenProgramID, IsSigner: false, IsWritable: false},
-			{PubKey: *tokenEvent.CreatorVault, IsSigner: false, IsWritable: true},
-			{PubKey: common.PublicKeyFromBytes(config.PumpFunEventAuthority), IsSigner: false, IsWritable: false},
-			{PubKey: common.PublicKeyFromBytes(config.PumpFunProgramID), IsSigner: false, IsWritable: false},
-		},
-		Data: t.createBuyInstructionDataWithTokenSupport(),
+	// Get pump.fun program constants
+	pumpFunProgram := solana.MustPublicKeyFromBase58("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
+	pumpFunGlobal := solana.MustPublicKeyFromBase58("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf")
+	pumpFunFeeRecipient := solana.MustPublicKeyFromBase58("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
+	pumpFunEventAuthority := solana.MustPublicKeyFromBase58("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
+
+	accounts := []*solana.AccountMeta{
+		{PublicKey: pumpFunGlobal, IsWritable: false, IsSigner: false},
+		{PublicKey: pumpFunFeeRecipient, IsWritable: true, IsSigner: false},
+		{PublicKey: tokenEvent.Mint, IsWritable: false, IsSigner: false},
+		{PublicKey: tokenEvent.BondingCurve, IsWritable: true, IsSigner: false},
+		{PublicKey: tokenEvent.AssociatedBondingCurve, IsWritable: true, IsSigner: false},
+		{PublicKey: userATA, IsWritable: true, IsSigner: false},
+		{PublicKey: t.wallet.GetPublicKey(), IsWritable: true, IsSigner: true},
+		{PublicKey: solana.SystemProgramID, IsWritable: false, IsSigner: false},
+		{PublicKey: solana.TokenProgramID, IsWritable: false, IsSigner: false},
+		{PublicKey: tokenEvent.CreatorVault, IsWritable: true, IsSigner: false},
+		{PublicKey: pumpFunEventAuthority, IsWritable: false, IsSigner: false},
+		{PublicKey: pumpFunProgram, IsWritable: false, IsSigner: false},
 	}
+
+	data := t.createBuyInstructionDataWithTokenSupport()
+
+	return solana.NewInstruction(
+		pumpFunProgram,
+		accounts,
+		data,
+	)
 }
 
 func (t *Trader) createBuyInstructionDataWithTokenSupport() []byte {
@@ -405,122 +418,24 @@ func (t *Trader) createBuyInstructionDataWithTokenSupport() []byte {
 		maxSolCost = uint64(float64(buyAmountLamports) * slippageFactor)
 	}
 
-	// аналог struct.pack("<Q", 16927863322537952870)
-	var expectedDiscriminator bytes.Buffer
-	binary.Write(&expectedDiscriminator, binary.LittleEndian, uint64(16927863322537952870))
-
-	// аналог struct.pack("<Q", token_amount_raw)
-	var tokenAmountBytes bytes.Buffer
-	binary.Write(&tokenAmountBytes, binary.LittleEndian, tokenAmount)
-
-	// аналог struct.pack("<Q", max_amount_lamports)
-	var maxAmountBytes bytes.Buffer
-	binary.Write(&maxAmountBytes, binary.LittleEndian, maxSolCost)
-
-	// аналог EXPECTED_DISCRIMINATOR + token_amount_bytes + max_amount_bytes
-	data := append(expectedDiscriminator.Bytes(), tokenAmountBytes.Bytes()...)
-	data = append(data, maxAmountBytes.Bytes()...)
-
-	return data
-}
-
-// precomputeInstructions - предварительное вычисление инструкций
-func (t *Trader) precomputeInstructions() {
-	// Pre-compute priority fee instruction
-	t.priorityFeeInstruction = types.Instruction{
-		ProgramID: common.PublicKeyFromBytes(config.GetComputeBudgetProgramID()),
-		Accounts:  []types.AccountMeta{},
-		Data:      t.createPriorityFeeData(),
-	}
-
-	// Pre-compute compute budget instruction
-	t.computeBudgetInstruction = types.Instruction{
-		ProgramID: common.PublicKeyFromBytes(config.GetComputeBudgetProgramID()),
-		Accounts:  []types.AccountMeta{},
-		Data:      t.createComputeBudgetData(),
-	}
-
-	t.logger.Info("⚡ Pre-computed instructions for ultra-fast trading")
-}
-
-// createFastInstructions - быстрое создание инструкций
-func (t *Trader) createFastInstructions(tokenEvent *TokenEvent) []types.Instruction {
-	instructions := make([]types.Instruction, 0, 3)
-
-	// Добавляем pre-computed инструкции
-	if t.config.Trading.PriorityFee > 0 {
-		instructions = append(instructions, t.priorityFeeInstruction)
-	}
-
-	instructions = append(instructions, t.computeBudgetInstruction)
-
-	// Создаем buy инструкцию (самая дорогая операция)
-	buyInstruction := t.createBuyInstructionFast(tokenEvent)
-	instructions = append(instructions, buyInstruction)
-
-	return instructions
-}
-
-// createBuyInstructionFast - быстрое создание buy инструкции
-func (t *Trader) createBuyInstructionFast(tokenEvent *TokenEvent) types.Instruction {
-	// Предполагаем что ATA уже существует или будет создан протоколом
-	userATA, _ := t.wallet.GetAssociatedTokenAddress(*tokenEvent.Mint)
-
-	return types.Instruction{
-		ProgramID: common.PublicKeyFromBytes(config.PumpFunProgramID),
-		Accounts: []types.AccountMeta{
-			{PubKey: common.PublicKeyFromBytes(config.PumpFunGlobal), IsSigner: false, IsWritable: false},
-			{PubKey: common.PublicKeyFromBytes(config.PumpFunFeeRecipient), IsSigner: false, IsWritable: true},
-			{PubKey: *tokenEvent.Mint, IsSigner: false, IsWritable: false},
-			{PubKey: *tokenEvent.BondingCurve, IsSigner: false, IsWritable: true},
-			{PubKey: *tokenEvent.AssociatedBondingCurve, IsSigner: false, IsWritable: true},
-			{PubKey: userATA, IsSigner: false, IsWritable: true},
-			{PubKey: t.wallet.GetPublicKey(), IsSigner: true, IsWritable: true},
-			{PubKey: common.SystemProgramID, IsSigner: false, IsWritable: false},
-			{PubKey: common.TokenProgramID, IsSigner: false, IsWritable: false},
-			{PubKey: common.PublicKeyFromBytes(config.RentProgramID), IsSigner: false, IsWritable: false},
-			{PubKey: common.PublicKeyFromBytes(config.PumpFunEventAuthority), IsSigner: false, IsWritable: false},
-			{PubKey: common.PublicKeyFromBytes(config.PumpFunProgramID), IsSigner: false, IsWritable: false},
-		},
-		Data: t.createBuyInstructionDataFast(),
-	}
-}
-
-// createBuyInstructionDataFast - предвычисленные данные для buy инструкции
-func (t *Trader) createBuyInstructionDataFast() []byte {
-	discriminator := []byte{0x66, 0x06, 0x3d, 0x12, 0x01, 0xda, 0xeb, 0xea}
-
-	// Предвычисленные значения для скорости
-	buyAmountLamports := config.ConvertSOLToLamports(t.config.Trading.BuyAmountSOL)
-	tokenAmount := uint64(1000000) // Фиксированное количество токенов
-	slippageFactor := 1.0 + float64(t.config.Trading.SlippageBP)/10000.0
-	maxSolCost := uint64(float64(buyAmountLamports) * slippageFactor)
+	// Buy instruction discriminator for pump.fun
+	discriminator := uint64(16927863322537952870)
 
 	data := make([]byte, 24)
-	copy(data[0:8], discriminator)
+	binary.LittleEndian.PutUint64(data[0:8], discriminator)
 	binary.LittleEndian.PutUint64(data[8:16], tokenAmount)
 	binary.LittleEndian.PutUint64(data[16:24], maxSolCost)
 
 	return data
 }
 
-// Вспомогательные методы для предвычисленных инструкций
-func (t *Trader) createPriorityFeeData() []byte {
-	data := make([]byte, 9)
-	data[0] = config.SetComputeUnitPriceInstruction
-	binary.LittleEndian.PutUint64(data[1:], t.config.Trading.PriorityFee)
-	return data
-}
-
-func (t *Trader) createComputeBudgetData() []byte {
-	data := make([]byte, 5)
-	data[0] = config.SetComputeUnitLimitInstruction
-	binary.LittleEndian.PutUint32(data[1:], 200000) // Фиксированный лимит
-	return data
+// precomputeInstructions - предварительное вычисление инструкций
+func (t *Trader) precomputeInstructions() {
+	t.logger.Info("⚡ Pre-computed instructions for ultra-fast trading")
 }
 
 // Кэширование blockhash для скорости
-func (t *Trader) getCachedBlockhash() string {
+func (t *Trader) getCachedBlockhash() solana.Hash {
 	t.blockhashMutex.RLock()
 	defer t.blockhashMutex.RUnlock()
 
@@ -529,7 +444,7 @@ func (t *Trader) getCachedBlockhash() string {
 		return t.cachedBlockhash
 	}
 
-	return ""
+	return solana.Hash{}
 }
 
 func (t *Trader) blockhashUpdater() {
@@ -540,12 +455,12 @@ func (t *Trader) blockhashUpdater() {
 		select {
 		case <-ticker.C:
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			blockhash, err := t.rpcClient.GetLatestBlockhash(ctx)
+			recent, err := t.rpcClient.GetLatestBlockhash(ctx)
 			cancel()
 
 			if err == nil {
 				t.blockhashMutex.Lock()
-				t.cachedBlockhash = blockhash
+				t.cachedBlockhash = recent
 				t.blockhashTimestamp = time.Now()
 				t.blockhashMutex.Unlock()
 			}
@@ -612,7 +527,7 @@ func (t *Trader) GetTradingStats() map[string]interface{} {
 		"fastest_trade_ms":  t.fastestTrade.Milliseconds(),
 		"average_trade_ms":  t.averageTradeTime.Milliseconds(),
 		"skip_validation":   t.skipValidation,
-		"cached_blockhash":  t.getCachedBlockhash() != "",
+		"cached_blockhash":  !t.getCachedBlockhash().IsZero(),
 		"uptime_seconds":    uptime.Seconds(),
 
 		// UPDATED: New trading method info
@@ -649,36 +564,4 @@ func (t *Trader) GetTraderType() string {
 // GetAutoSeller returns the auto-seller instance (for external configuration)
 func (t *Trader) GetAutoSeller() *AutoSeller {
 	return t.autoSeller
-}
-
-// CreateBuyTransaction implements TransactionCapableTrader interface for Jito integration
-func (t *Trader) CreateBuyTransaction(ctx context.Context, tokenEvent *TokenEvent) (types.Transaction, error) {
-	// Create fast instructions
-	instructions := t.createFastInstructions(tokenEvent)
-
-	// Get recent blockhash
-	blockhash, err := t.rpcClient.GetLatestBlockhash(ctx)
-	if err != nil {
-		// Fallback to cached blockhash
-		blockhash = t.getCachedBlockhash()
-		if blockhash == "" {
-			return types.Transaction{}, fmt.Errorf("failed to get blockhash: %w", err)
-		}
-	}
-
-	// Create transaction
-	transaction, err := types.NewTransaction(types.NewTransactionParam{
-		Signers: []types.Account{t.wallet.GetAccount()},
-		Message: types.NewMessage(types.NewMessageParam{
-			FeePayer:        t.wallet.GetPublicKey(),
-			RecentBlockhash: blockhash,
-			Instructions:    instructions,
-		}),
-	})
-
-	if err != nil {
-		return types.Transaction{}, fmt.Errorf("failed to create transaction: %w", err)
-	}
-
-	return transaction, nil
 }

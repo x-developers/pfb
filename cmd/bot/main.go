@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"pump-fun-bot-go/internal/client"
 	"strings"
 	"syscall"
 	"time"
@@ -14,7 +15,6 @@ import (
 	"pump-fun-bot-go/internal/config"
 	"pump-fun-bot-go/internal/logger"
 	"pump-fun-bot-go/internal/pumpfun"
-	"pump-fun-bot-go/internal/solana"
 	"pump-fun-bot-go/internal/wallet"
 )
 
@@ -62,9 +62,9 @@ type App struct {
 	config       *config.Config
 	logger       *logger.Logger
 	tradeLogger  *logger.TradeLogger
-	solanaClient *solana.Client
-	wsClient     *solana.WSClient
-	jitoClient   *solana.JitoClient
+	solanaClient *client.Client
+	wsClient     *client.WSClient
+	jitoClient   *client.JitoClient
 	wallet       *wallet.Wallet
 	listener     *pumpfun.Listener
 	trader       pumpfun.TraderInterface
@@ -224,23 +224,24 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 		return nil, fmt.Errorf("failed to create trade logger: %w", err)
 	}
 
-	solanaClient := solana.NewClient(solana.ClientConfig{
-		Endpoint: cfg.RPCUrl,
-		APIKey:   cfg.RPCAPIKey,
-		Timeout:  30 * time.Second,
+	solanaClient := client.NewClient(client.ClientConfig{
+		RPCEndpoint: cfg.RPCUrl,
+		WSEndpoint:  cfg.WSUrl,
+		APIKey:      cfg.RPCAPIKey,
+		Timeout:     30 * time.Second,
 	}, log.Logger)
 
-	wsClient := solana.NewWSClient(cfg.WSUrl, log.Logger)
+	wsClient := client.NewWSClient(cfg.WSUrl, log.Logger)
 
 	// Initialize Jito client if enabled
-	var jitoClient *solana.JitoClient
+	var jitoClient *client.JitoClient
 	if cfg.JITO.Enabled {
-		jitoConfig := solana.JitoClientConfig{
+		jitoConfig := client.JitoClientConfig{
 			Endpoint: cfg.JITO.Endpoint,
 			APIKey:   cfg.JITO.APIKey,
 			Timeout:  30 * time.Second,
 		}
-		jitoClient = solana.NewJitoClient(jitoConfig, log.Logger)
+		jitoClient = client.NewJitoClient(jitoConfig, log.Logger)
 	}
 
 	// Initialize wallet
@@ -297,8 +298,8 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 func createTrader(
 	cfg *config.Config,
 	wallet *wallet.Wallet,
-	solanaClient *solana.Client,
-	jitoClient *solana.JitoClient,
+	solanaClient *client.Client,
+	jitoClient *client.JitoClient,
 	log *logger.Logger,
 	tradeLogger *logger.TradeLogger,
 ) pumpfun.TraderInterface {
@@ -325,7 +326,7 @@ func createTrader(
 	}
 
 	// Wrap with Jito protection if enabled
-	if cfg.JITO.Enabled && cfg.JITO.UseForTrading {
+	if cfg.JITO.Enabled {
 		log.Info("🛡️ Wrapping trader with Jito MEV protection")
 		jitoTrader := pumpfun.NewJitoTrader(baseTrader, jitoClient, wallet, log, cfg)
 
@@ -502,7 +503,7 @@ func (a *App) processTokenUltraFast(tokenEvent *pumpfun.TokenEvent, workerID int
 
 	// Log discovery with worker ID
 	a.logger.WithFields(map[string]interface{}{
-		"mint":      tokenEvent.Mint.String(),
+		"mint":      tokenEvent.Mint,
 		"name":      tokenEvent.Name,
 		"symbol":    tokenEvent.Symbol,
 		"worker_id": workerID,

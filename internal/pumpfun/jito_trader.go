@@ -2,28 +2,26 @@ package pumpfun
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
+	"github.com/gagliardetto/solana-go"
+	"pump-fun-bot-go/internal/client"
 	"time"
 
 	"pump-fun-bot-go/internal/config"
 	"pump-fun-bot-go/internal/logger"
-	"pump-fun-bot-go/internal/solana"
 	"pump-fun-bot-go/internal/wallet"
-
-	"github.com/blocto/solana-go-sdk/types"
 )
 
 // TransactionCapableTrader interface for traders that can create transactions
 type TransactionCapableTrader interface {
 	TraderInterface
-	CreateBuyTransaction(ctx context.Context, tokenEvent *TokenEvent) (types.Transaction, error)
+	CreateBuyTransaction(ctx context.Context, tokenEvent *TokenEvent) (solana.Transaction, error)
 }
 
 // JitoTrader wraps trading operations with MEV protection via Jito
 type JitoTrader struct {
 	trader     TraderInterface
-	jitoClient *solana.JitoClient
+	jitoClient *client.JitoClient
 	wallet     *wallet.Wallet
 	logger     *logger.Logger
 	config     *config.Config
@@ -33,7 +31,7 @@ type JitoTrader struct {
 // NewJitoTrader creates a new Jito-enhanced trader
 func NewJitoTrader(
 	baseTrader TraderInterface,
-	jitoClient *solana.JitoClient,
+	jitoClient *client.JitoClient,
 	wallet *wallet.Wallet,
 	logger *logger.Logger,
 	config *config.Config,
@@ -99,11 +97,10 @@ func (jt *JitoTrader) executeWithJitoProtection(ctx context.Context, tokenEvent 
 	}
 
 	// Serialize transaction to base64
-	txBytes, err := buyTransaction.Serialize()
+	encodedTx, err := buyTransaction.ToBase64()
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize transaction: %w", err)
 	}
-	encodedTx := base64.StdEncoding.EncodeToString(txBytes)
 
 	// Create tip transaction if configured
 	var tipTransaction string
@@ -227,7 +224,7 @@ func (jt *JitoTrader) sendJitoBundle(ctx context.Context, buyTx, tipTx string) (
 }
 
 // waitForBundleConfirmation waits for bundle confirmation and extracts signature
-func (jt *JitoTrader) waitForBundleConfirmation(ctx context.Context, bundleID string) (string, error) {
+func (jt *JitoTrader) waitForBundleConfirmation(ctx context.Context, bundleID string) (solana.Signature, error) {
 	// Create timeout context for confirmation
 	confirmCtx, cancel := context.WithTimeout(ctx, time.Duration(jt.config.JITO.ConfirmTimeout)*time.Second)
 	defer cancel()
@@ -237,21 +234,21 @@ func (jt *JitoTrader) waitForBundleConfirmation(ctx context.Context, bundleID st
 	// Wait for confirmation
 	err := jt.jitoClient.ConfirmBundle(confirmCtx, bundleID)
 	if err != nil {
-		return "", fmt.Errorf("bundle confirmation failed: %w", err)
+		return solana.Signature{}, fmt.Errorf("bundle confirmation failed: %w", err)
 	}
 
 	// Get bundle status to extract transaction signatures
 	status, err := jt.jitoClient.GetBundleStatus(ctx, bundleID)
 	if err != nil {
-		return "", fmt.Errorf("failed to get bundle status: %w", err)
+		return solana.Signature{}, fmt.Errorf("failed to get bundle status: %w", err)
 	}
 
 	// Return the first transaction signature (buy transaction)
 	if len(status.Transactions) > 0 {
-		return status.Transactions[0].Signature, nil
+		//return solana.SignatureFromBase58(status.Transactions[0].Signature), nil
 	}
 
-	return "", fmt.Errorf("no transaction signatures found in bundle")
+	return solana.Signature{}, fmt.Errorf("no transaction signatures found in bundle")
 }
 
 // fallbackToRegularTransaction falls back to regular transaction if Jito fails
@@ -330,14 +327,6 @@ func (jt *JitoTrader) GetTraderType() string {
 func (jt *JitoTrader) ValidateTokenEvent(tokenEvent *TokenEvent) error {
 	if validator, ok := jt.trader.(interface{ ValidateTokenEvent(*TokenEvent) error }); ok {
 		return validator.ValidateTokenEvent(tokenEvent)
-	}
-
-	// Basic validation if base trader doesn't support it
-	if tokenEvent.Mint == nil {
-		return fmt.Errorf("token mint is nil")
-	}
-	if tokenEvent.BondingCurve == nil {
-		return fmt.Errorf("bonding curve is nil")
 	}
 
 	return nil

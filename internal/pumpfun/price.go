@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"github.com/blocto/solana-go-sdk/common"
 	"math"
+	"pump-fun-bot-go/internal/client"
 
 	"pump-fun-bot-go/internal/config"
-	"pump-fun-bot-go/internal/solana"
 )
 
 // BondingCurveData represents the bonding curve account data
@@ -23,11 +23,11 @@ type BondingCurveData struct {
 
 // PriceCalculator handles price calculations for pump.fun tokens
 type PriceCalculator struct {
-	rpcClient *solana.Client
+	rpcClient *client.Client
 }
 
 // NewPriceCalculator creates a new price calculator
-func NewPriceCalculator(rpcClient *solana.Client) *PriceCalculator {
+func NewPriceCalculator(rpcClient *client.Client) *PriceCalculator {
 	return &PriceCalculator{
 		rpcClient: rpcClient,
 	}
@@ -85,27 +85,14 @@ func (pc *PriceCalculator) GetSOLForTokens(ctx context.Context, bondingCurveAddr
 
 // GetBondingCurveData fetches and decodes bonding curve account data
 func (pc *PriceCalculator) GetBondingCurveData(ctx context.Context, bondingCurveAddress common.PublicKey) (*BondingCurveData, error) {
-	accountInfo, err := pc.rpcClient.GetAccountInfo(ctx, bondingCurveAddress.String())
-	if err != nil {
-		return nil, fmt.Errorf("failed to get account info: %w", err)
-	}
-
-	if accountInfo == nil {
-		return nil, fmt.Errorf("bonding curve account not found")
-	}
-
-	if len(accountInfo.Data) == 0 {
-		return nil, fmt.Errorf("empty bonding curve data")
-	}
-
-	// Decode base64 data (first element is the data, second is encoding)
-	if len(accountInfo.Data) < 1 {
-		return nil, fmt.Errorf("invalid account data format")
-	}
+	//accountInfo, err := pc.rpcClient.GetAccountInfo(ctx, bondingCurveAddress.String())
+	//if err != nil {
+	//	return nil, fmt.Errorf("failed to get account info: %w", err)
+	//}
 
 	// For now, we'll use mock data structure
 	// In production, you'd decode the actual bonding curve account data
-	return pc.decodeBondingCurveData([]byte(accountInfo.Data[0]))
+	return pc.decodeBondingCurveData([]byte{})
 }
 
 // decodeBondingCurveData decodes the raw bonding curve account data

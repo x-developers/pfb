@@ -1,10 +1,11 @@
-package solana
+package client
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/gagliardetto/solana-go/rpc/jsonrpc"
 	"io"
 	"net/http"
 	"time"
@@ -42,10 +43,10 @@ type JitoBundleRequestParams struct {
 
 // JitoBundleResponse represents JITO bundle submission response
 type JitoBundleResponse struct {
-	JSONRPC string    `json:"jsonrpc"`
-	ID      int       `json:"id"`
-	Result  string    `json:"result,omitempty"` // Bundle UUID
-	Error   *RPCError `json:"error,omitempty"`
+	JSONRPC string            `json:"jsonrpc"`
+	ID      int               `json:"id"`
+	Result  string            `json:"result,omitempty"` // Bundle UUID
+	Error   *jsonrpc.RPCError `json:"error,omitempty"`
 }
 
 // JitoTipRequest represents a tip transaction request
@@ -79,10 +80,10 @@ type JitoAccountMeta struct {
 
 // JitoTipAccountsResponse represents tip accounts response
 type JitoTipAccountsResponse struct {
-	JSONRPC string    `json:"jsonrpc"`
-	ID      int       `json:"id"`
-	Result  []string  `json:"result,omitempty"`
-	Error   *RPCError `json:"error,omitempty"`
+	JSONRPC string            `json:"jsonrpc"`
+	ID      int               `json:"id"`
+	Result  []string          `json:"result,omitempty"`
+	Error   *jsonrpc.RPCError `json:"error,omitempty"`
 }
 
 // JitoBundleStatusRequest represents bundle status request
@@ -98,7 +99,7 @@ type JitoBundleStatusResponse struct {
 	JSONRPC string                 `json:"jsonrpc"`
 	ID      int                    `json:"id"`
 	Result  JitoBundleStatusResult `json:"result,omitempty"`
-	Error   *RPCError              `json:"error,omitempty"`
+	Error   *jsonrpc.RPCError      `json:"error,omitempty"`
 }
 
 // JitoBundleStatusResult represents bundle status result
@@ -188,10 +189,10 @@ func (jc *JitoClient) makeJitoRequest(ctx context.Context, method string, params
 	}
 
 	var rpcResponse struct {
-		JSONRPC string           `json:"jsonrpc"`
-		ID      int              `json:"id"`
-		Result  *json.RawMessage `json:"result,omitempty"`
-		Error   *RPCError        `json:"error,omitempty"`
+		JSONRPC string            `json:"jsonrpc"`
+		ID      int               `json:"id"`
+		Result  *json.RawMessage  `json:"result,omitempty"`
+		Error   *jsonrpc.RPCError `json:"error,omitempty"`
 	}
 
 	if err := json.Unmarshal(responseBody, &rpcResponse); err != nil {
