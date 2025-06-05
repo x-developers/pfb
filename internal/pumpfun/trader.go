@@ -1,57 +1,39 @@
-// internal/pumpfun/trader.go (Updated with Auto-Sell Integration)
 package pumpfun
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
-	"pump-fun-bot-go/internal/client"
-	"sync"
 	"time"
 
+	"pump-fun-bot-go/internal/client"
 	"pump-fun-bot-go/internal/config"
 	"pump-fun-bot-go/internal/logger"
 	"pump-fun-bot-go/internal/wallet"
-
-	"github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/programs/associated-token-account"
 )
 
+// Trader orchestrates token trading operations
 type Trader struct {
-	wallet    *wallet.Wallet
-	rpcClient *client.Client
-	logger    *logger.Logger
-	config    *config.Config
-
-	autoSeller *AutoSeller
-
-	// Pre-computed data for speed
-	precomputedInstructions  map[string]solana.Instruction
-	priorityFeeInstruction   solana.Instruction
-	computeBudgetInstruction solana.Instruction
-
-	// Fast blockhash management
-	cachedBlockhash    solana.Hash
-	blockhashTimestamp time.Time
-	blockhashMutex     sync.RWMutex
+	buyer       *Buyer
+	seller      *Seller
+	wallet      *wallet.Wallet
+	rpcClient   *client.Client
+	logger      *logger.Logger
+	tradeLogger *logger.TradeLogger
+	config      *config.Config
 
 	// Statistics
 	totalTrades      int64
 	successfulTrades int64
-	autoSells        int64
-	fastestTrade     time.Duration
-	averageTradeTime time.Duration
-
-	// Settings
-	skipValidation bool
-
-	// Enhanced statistics for timing validation
 	rejectedByTiming int64
 	staleTokens      int64
 	startTime        time.Time
 	lastTradeTime    time.Time
+
+	// Settings
+	skipValidation bool
 }
 
+// NewTrader creates a new trader instance
 func NewTrader(
 	wallet *wallet.Wallet,
 	rpcClient *client.Client,
@@ -59,52 +41,32 @@ func NewTrader(
 	config *config.Config,
 ) *Trader {
 	trader := &Trader{
-		wallet:                  wallet,
-		rpcClient:               rpcClient,
-		logger:                  logger,
-		config:                  config,
-		precomputedInstructions: make(map[string]solana.Instruction),
-		fastestTrade:            time.Hour,
-		skipValidation:          config.Strategy.YoloMode,
-		startTime:               time.Now(),
+		wallet:         wallet,
+		rpcClient:      rpcClient,
+		logger:         logger,
+		config:         config,
+		skipValidation: config.Strategy.YoloMode,
+		startTime:      time.Now(),
 	}
 
-	// Initialize auto-seller
-	trader.autoSeller = NewAutoSeller(
-		wallet,
-		rpcClient,
-		nil, // Will be set by JitoTrader if used
-		logger,
-		nil, // Will be set when trade logger is available
-		config,
-	)
+	// Initialize buyer
+	trader.buyer = NewBuyer(wallet, rpcClient, logger, config)
 
-	// Pre-compute common instructions
-	trader.precomputeInstructions()
-
-	// Start background blockhash updater
-	go trader.blockhashUpdater()
+	// Initialize seller
+	trader.seller = NewSeller(wallet, rpcClient, logger, nil, config)
 
 	return trader
 }
 
-// SetJitoClient sets the Jito client for auto-seller
-func (t *Trader) SetJitoClient(jitoClient *client.JitoClient) {
-	if t.autoSeller != nil {
-		t.autoSeller.SetJitoClient(jitoClient)
-	}
-}
-
-// SetTradeLogger sets the trade logger for auto-seller
+// SetTradeLogger sets the trade logger for both buyer and seller
 func (t *Trader) SetTradeLogger(tradeLogger *logger.TradeLogger) {
-	if t.autoSeller != nil {
-		t.autoSeller.SetTradeLogger(tradeLogger)
-	}
+	t.tradeLogger = tradeLogger
+	t.seller.SetTradeLogger(tradeLogger)
 }
 
-// ShouldBuyToken - минимальные проверки для скорости с добавлением проверки возраста токена
+// ShouldBuyToken determines if we should buy a token with timing validation
 func (t *Trader) ShouldBuyToken(ctx context.Context, tokenEvent *TokenEvent) (bool, string) {
-	// Check if we're respecting the max tokens per hour limit
+	// Check trading limits
 	if t.config.Strategy.MaxTokensPerHour > 0 {
 		hourAgo := time.Now().Add(-time.Hour)
 		if t.lastTradeTime.After(hourAgo) && t.successfulTrades >= t.config.Strategy.MaxTokensPerHour {
@@ -112,7 +74,7 @@ func (t *Trader) ShouldBuyToken(ctx context.Context, tokenEvent *TokenEvent) (bo
 		}
 	}
 
-	// Log the timing analysis for ultra-fast mode
+	// Timing analysis
 	age := tokenEvent.GetAge()
 	timeSinceDiscovery := time.Since(tokenEvent.DiscoveredAt)
 
@@ -124,21 +86,19 @@ func (t *Trader) ShouldBuyToken(ctx context.Context, tokenEvent *TokenEvent) (bo
 		"processing_delay_ms":    tokenEvent.ProcessingDelayMs,
 		"max_age_ms":             t.config.Trading.MaxTokenAgeMs,
 		"min_discovery_delay_ms": t.config.Trading.MinDiscoveryDelayMs,
-		"ultra_fast":             true,
-	}).Debug("🕒 Ultra-fast timing analysis for token")
+	}).Debug("🕒 Timing analysis for token")
 
 	// Check if token is too old
 	if tokenEvent.IsStale(t.config) {
 		t.staleTokens++
-		reason := fmt.Sprintf("ULTRA-FAST: token too old: %dms (max: %dms)",
+		reason := fmt.Sprintf("token too old: %dms (max: %dms)",
 			age.Milliseconds(), t.config.Trading.MaxTokenAgeMs)
 
 		t.logger.WithFields(map[string]interface{}{
-			"mint":       tokenEvent.Mint.String(),
-			"age_ms":     age.Milliseconds(),
-			"max_ms":     t.config.Trading.MaxTokenAgeMs,
-			"ultra_fast": true,
-		}).Debug("⏰ Ultra-fast token rejected - too old")
+			"mint":   tokenEvent.Mint.String(),
+			"age_ms": age.Milliseconds(),
+			"max_ms": t.config.Trading.MaxTokenAgeMs,
+		}).Debug("⏰ Token rejected - too old")
 
 		return false, reason
 	}
@@ -147,7 +107,7 @@ func (t *Trader) ShouldBuyToken(ctx context.Context, tokenEvent *TokenEvent) (bo
 	if !t.skipValidation && tokenEvent.ShouldWaitForDelay(t.config) {
 		t.rejectedByTiming++
 		waitTime := t.config.GetMinDiscoveryDelay() - timeSinceDiscovery
-		reason := fmt.Sprintf("ULTRA-FAST: waiting for discovery delay: need %dms more",
+		reason := fmt.Sprintf("waiting for discovery delay: need %dms more",
 			waitTime.Milliseconds())
 
 		t.logger.WithFields(map[string]interface{}{
@@ -155,69 +115,84 @@ func (t *Trader) ShouldBuyToken(ctx context.Context, tokenEvent *TokenEvent) (bo
 			"elapsed_ms":   timeSinceDiscovery.Milliseconds(),
 			"required_ms":  t.config.Trading.MinDiscoveryDelayMs,
 			"wait_more_ms": waitTime.Milliseconds(),
-			"ultra_fast":   true,
-		}).Debug("⏱️ Ultra-fast token rejected - waiting for discovery delay")
+		}).Debug("⏱️ Token rejected - waiting for discovery delay")
 
 		return false, reason
 	}
 
-	// Если включен skipValidation, пропускаем все остальные проверки
+	// Skip validation if enabled
 	if t.skipValidation {
 		t.logger.WithFields(map[string]interface{}{
 			"mint":                tokenEvent.Mint.String(),
 			"age_ms":              age.Milliseconds(),
 			"discovery_delay_ms":  timeSinceDiscovery.Milliseconds(),
 			"processing_delay_ms": tokenEvent.ProcessingDelayMs,
-			"ultra_fast":          true,
-		}).Debug("✅ Ultra-fast token passed timing validation (skip validation enabled)")
+		}).Debug("✅ Token passed timing validation (skip validation enabled)")
 
-		return true, "ULTRA-FAST: skipping validation (timing checks passed)"
+		return true, "skipping validation (timing checks passed)"
 	}
 
-	// Только самые базовые проверки для максимальной скорости
+	// Basic validation
 	if tokenEvent.Mint.IsZero() {
-		return false, "ULTRA-FAST: invalid mint"
+		return false, "invalid mint"
 	}
 
 	if tokenEvent.BondingCurve.IsZero() {
-		return false, "ULTRA-FAST: invalid bonding curve"
+		return false, "invalid bonding curve"
 	}
 
-	// Log successful timing validation
 	t.logger.WithFields(map[string]interface{}{
 		"mint":                tokenEvent.Mint.String(),
 		"age_ms":              age.Milliseconds(),
 		"discovery_delay_ms":  timeSinceDiscovery.Milliseconds(),
 		"processing_delay_ms": tokenEvent.ProcessingDelayMs,
-		"ultra_fast":          true,
-	}).Debug("✅ Ultra-fast token passed all validation including timing")
+	}).Debug("✅ Token passed all validation including timing")
 
-	return true, "ULTRA-FAST: basic validation passed with timing checks"
+	return true, "basic validation passed with timing checks"
 }
 
-// BuyToken - максимально быстрое выполнение покупки с возможностью автопродажи
+// BuyToken executes a token purchase and schedules auto-sell if enabled
 func (t *Trader) BuyToken(ctx context.Context, tokenEvent *TokenEvent) (*TradeResult, error) {
 	start := time.Now()
 
-	// Немедленно создаем и отправляем транзакцию
-	result, err := t.executeUltraFastBuy(ctx, tokenEvent, start)
-
-	// Обновляем статистику
-	t.updateStatistics(start, err == nil && result.Success)
-
-	// Если покупка успешна и включена автопродажа, планируем продажу
-	if err == nil && result.Success && t.autoSeller.IsEnabled() {
-		t.scheduleAutoSell(tokenEvent, result)
+	// Create buy request
+	buyRequest := BuyRequest{
+		TokenEvent:     tokenEvent,
+		UseTokenAmount: t.config.IsTokenBasedTrading(),
+		MaxSlippage:    t.config.Trading.SlippageBP,
 	}
 
-	return result, err
+	if t.config.IsTokenBasedTrading() {
+		buyRequest.AmountTokens = t.config.Trading.BuyAmountTokens
+		buyRequest.AmountSOL = float64(t.config.Trading.BuyAmountTokens) * 0.00001 // Estimate for logging
+	} else {
+		buyRequest.AmountSOL = t.config.Trading.BuyAmountSOL
+		buyRequest.AmountTokens = 1000000 // Default token amount
+	}
+
+	// Execute buy
+	buyResult, err := t.buyer.Buy(ctx, buyRequest)
+	if err != nil {
+		t.updateStatistics(start, false)
+		return t.convertBuyResultToTradeResult(buyResult), err
+	}
+
+	// Update statistics
+	t.updateStatistics(start, buyResult.Success)
+
+	// Schedule auto-sell if enabled and purchase was successful
+	if buyResult.Success && t.seller.IsEnabled() {
+		t.scheduleAutoSell(tokenEvent, buyResult)
+	}
+
+	return t.convertBuyResultToTradeResult(buyResult), nil
 }
 
-// scheduleAutoSell планирует автоматическую продажу после покупки
-func (t *Trader) scheduleAutoSell(tokenEvent *TokenEvent, purchaseResult *TradeResult) {
-	autoSellRequest := AutoSellRequest{
+// scheduleAutoSell schedules automatic selling after purchase
+func (t *Trader) scheduleAutoSell(tokenEvent *TokenEvent, buyResult *BuyResult) {
+	sellRequest := SellRequest{
 		TokenEvent:     tokenEvent,
-		PurchaseResult: purchaseResult,
+		PurchaseResult: buyResult,
 		DelayMs:        t.config.Trading.SellDelayMs,
 		SellPercentage: t.config.Trading.SellPercentage,
 		CloseATA:       t.config.Trading.CloseATAAfterSell,
@@ -225,289 +200,76 @@ func (t *Trader) scheduleAutoSell(tokenEvent *TokenEvent, purchaseResult *TradeR
 
 	t.logger.WithFields(map[string]interface{}{
 		"mint":            tokenEvent.Mint.String(),
-		"purchase_amount": purchaseResult.AmountSOL,
-		"delay_ms":        autoSellRequest.DelayMs,
-		"sell_percentage": autoSellRequest.SellPercentage,
+		"purchase_amount": buyResult.AmountSOL,
+		"delay_ms":        sellRequest.DelayMs,
+		"sell_percentage": sellRequest.SellPercentage,
 		"auto_sell":       true,
 		"token_based":     t.config.IsTokenBasedTrading(),
 	}).Info("📅 Scheduling auto-sell operation")
 
-	t.autoSeller.ScheduleAutoSell(autoSellRequest)
-	t.autoSells++
+	t.seller.ScheduleSell(sellRequest)
 }
 
-func (t *Trader) executeUltraFastBuy(ctx context.Context, tokenEvent *TokenEvent, startTime time.Time) (*TradeResult, error) {
-
-	t.rpcClient.CreateATA(t.wallet.GetPublicKey(), t.wallet.GetAccount(), tokenEvent.Mint)
-
-	//t.logger.LogTokenEventDiscovery(tokenEvent)
-	instructions := t.createFastInstructionsWithTokenSupport(tokenEvent)
-
-	blockhash := t.getCachedBlockhash()
-	if blockhash.IsZero() {
-		recent, _ := t.rpcClient.GetLatestBlockhash(ctx)
-		blockhash = recent
-
-		//
-		//return &TradeResult{
-		//	Success:   false,
-		//	Error:     fmt.Sprintf("Empty cached blockhash queue. Skipping..."),
-		//	TradeTime: time.Since(startTime).Milliseconds(),
-		//}, fmt.Errorf("Empty cached blockhash queue. Skipping...")
-	}
-
-	transaction, err := solana.NewTransaction(
-		instructions,
-		blockhash,
-		solana.TransactionPayer(t.wallet.GetPublicKey()),
-	)
-	if err != nil {
+// convertBuyResultToTradeResult converts BuyResult to TradeResult
+func (t *Trader) convertBuyResultToTradeResult(buyResult *BuyResult) *TradeResult {
+	if buyResult == nil {
 		return &TradeResult{
-			Success:   false,
-			Error:     fmt.Sprintf("failed to create transaction: %v", err),
-			TradeTime: time.Since(startTime).Milliseconds(),
-		}, err
-	}
-
-	// Sign transaction
-
-	_, err = transaction.Sign(
-		func(key solana.PublicKey) *solana.PrivateKey {
-			if t.wallet.GetPublicKey().Equals(key) {
-				account := t.wallet.GetAccount()
-				return &account
-			}
-			return nil
-		},
-	)
-
-	if err != nil {
-		return &TradeResult{
-			Success:   false,
-			Error:     fmt.Sprintf("failed to sign transaction: %v", err),
-			TradeTime: time.Since(startTime).Milliseconds(),
-		}, err
-	}
-
-	signature, err := t.rpcClient.SendAndConfirmTransaction(ctx, transaction)
-	if err != nil {
-		return &TradeResult{
-			Success:   false,
-			Error:     fmt.Sprintf("failed to send transaction: %v", err),
-			TradeTime: time.Since(startTime).Milliseconds(),
-		}, err
-	}
-
-	tradeTime := time.Since(startTime)
-
-	var buyAmountSOL float64
-	var tokenAmount uint64
-
-	if t.config.IsTokenBasedTrading() {
-		tokenAmount = t.config.Trading.BuyAmountTokens
-		// Примерная оценка SOL для логирования (можно улучшить)
-		buyAmountSOL = float64(tokenAmount) * 0.00001 // Примерная цена
-	} else {
-		buyAmountSOL = t.config.Trading.BuyAmountSOL
-		tokenAmount = 1000000 // Упрощенное значение
-	}
-
-	// Calculate delays for enhanced logging
-	age := tokenEvent.GetAge()
-	discoveryDelay := time.Since(tokenEvent.DiscoveredAt)
-	totalDelay := time.Since(tokenEvent.Timestamp)
-
-	t.logger.WithFields(map[string]interface{}{
-		"signature":           signature,
-		"trade_time":          tradeTime.Milliseconds(),
-		"mint":                tokenEvent.Mint.String(),
-		"ultra_fast":          true,
-		"age_ms":              age.Milliseconds(),
-		"discovery_delay_ms":  discoveryDelay.Milliseconds(),
-		"total_delay_ms":      totalDelay.Milliseconds(),
-		"processing_delay_ms": tokenEvent.ProcessingDelayMs,
-		"execution_delay_ms":  tradeTime.Milliseconds(),
-		"auto_sell_enabled":   t.autoSeller.IsEnabled(),
-		"auto_sell_delay_ms":  t.config.Trading.SellDelayMs,
-		"token_based":         t.config.IsTokenBasedTrading(),
-		"buy_amount_sol":      buyAmountSOL,
-		"buy_amount_tokens":   tokenAmount,
-	}).Info("⚡⚡ ULTRA-FAST TRADE EXECUTED")
-
-	return &TradeResult{
-		Success:      true,
-		Signature:    signature,
-		AmountSOL:    buyAmountSOL,
-		AmountTokens: tokenAmount,
-		Price:        buyAmountSOL / float64(tokenAmount),
-		TradeTime:    tradeTime.Milliseconds(),
-	}, nil
-}
-
-// NEW: createFastInstructionsWithTokenSupport - быстрое создание инструкций с поддержкой токенов
-func (t *Trader) createFastInstructionsWithTokenSupport(tokenEvent *TokenEvent) []solana.Instruction {
-	instructions := make([]solana.Instruction, 0, 4)
-
-	// Create ATA if needed
-	ataInstruction := t.createIdempotentAssociatedInstruction(tokenEvent)
-	instructions = append(instructions, ataInstruction)
-
-	buyInstruction := t.createBuyInstructionWithTokenSupport(tokenEvent)
-	instructions = append(instructions, buyInstruction)
-
-	return instructions
-}
-
-func (t *Trader) createIdempotentAssociatedInstruction(tokenEvent *TokenEvent) solana.Instruction {
-	return associatedtokenaccount.NewCreateInstruction(
-		t.wallet.GetPublicKey(), // payer
-		t.wallet.GetPublicKey(), // wallet
-		tokenEvent.Mint,         // mint
-	).Build()
-}
-
-// NEW: createBuyInstructionWithTokenSupport - создание buy инструкции с поддержкой токенов
-func (t *Trader) createBuyInstructionWithTokenSupport(tokenEvent *TokenEvent) solana.Instruction {
-	// Get ATA address
-	userATA, _ := t.wallet.GetAssociatedTokenAddress(tokenEvent.Mint)
-
-	// Get pump.fun program constants
-	pumpFunProgram := solana.MustPublicKeyFromBase58("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
-	pumpFunGlobal := solana.MustPublicKeyFromBase58("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf")
-	pumpFunFeeRecipient := solana.MustPublicKeyFromBase58("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
-	pumpFunEventAuthority := solana.MustPublicKeyFromBase58("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
-
-	accounts := []*solana.AccountMeta{
-		{PublicKey: pumpFunGlobal, IsWritable: false, IsSigner: false},
-		{PublicKey: pumpFunFeeRecipient, IsWritable: true, IsSigner: false},
-		{PublicKey: tokenEvent.Mint, IsWritable: false, IsSigner: false},
-		{PublicKey: tokenEvent.BondingCurve, IsWritable: true, IsSigner: false},
-		{PublicKey: tokenEvent.AssociatedBondingCurve, IsWritable: true, IsSigner: false},
-		{PublicKey: userATA, IsWritable: true, IsSigner: false},
-		{PublicKey: t.wallet.GetPublicKey(), IsWritable: true, IsSigner: true},
-		{PublicKey: solana.SystemProgramID, IsWritable: false, IsSigner: false},
-		{PublicKey: solana.TokenProgramID, IsWritable: false, IsSigner: false},
-		{PublicKey: tokenEvent.CreatorVault, IsWritable: true, IsSigner: false},
-		{PublicKey: pumpFunEventAuthority, IsWritable: false, IsSigner: false},
-		{PublicKey: pumpFunProgram, IsWritable: false, IsSigner: false},
-	}
-
-	data := t.createBuyInstructionDataWithTokenSupport()
-
-	return solana.NewInstruction(
-		pumpFunProgram,
-		accounts,
-		data,
-	)
-}
-
-func (t *Trader) createBuyInstructionDataWithTokenSupport() []byte {
-	var tokenAmount uint64
-	var maxSolCost uint64
-
-	if t.config.IsTokenBasedTrading() {
-		// Используем токены напрямую
-		tokenAmount = t.config.Trading.BuyAmountTokens
-		// Устанавливаем большое максимальное значение SOL для безопасности
-		maxSolCost = config.ConvertSOLToLamports(t.config.Trading.BuyAmountSOL * 2) // 2x от обычного SOL amount как safety margin
-	} else {
-		// Традиционный метод через SOL
-		buyAmountLamports := config.ConvertSOLToLamports(t.config.Trading.BuyAmountSOL)
-		tokenAmount = 1000000 // Фиксированное количество токенов
-		slippageFactor := 1.0 + float64(t.config.Trading.SlippageBP)/10000.0
-		maxSolCost = uint64(float64(buyAmountLamports) * slippageFactor)
-	}
-
-	// Buy instruction discriminator for pump.fun
-	discriminator := uint64(16927863322537952870)
-
-	data := make([]byte, 24)
-	binary.LittleEndian.PutUint64(data[0:8], discriminator)
-	binary.LittleEndian.PutUint64(data[8:16], tokenAmount)
-	binary.LittleEndian.PutUint64(data[16:24], maxSolCost)
-
-	return data
-}
-
-// precomputeInstructions - предварительное вычисление инструкций
-func (t *Trader) precomputeInstructions() {
-	t.logger.Info("⚡ Pre-computed instructions for ultra-fast trading")
-}
-
-// Кэширование blockhash для скорости
-func (t *Trader) getCachedBlockhash() solana.Hash {
-	t.blockhashMutex.RLock()
-	defer t.blockhashMutex.RUnlock()
-
-	// Проверяем свежесть (blockhash действителен ~1-2 минуты)
-	if time.Since(t.blockhashTimestamp) < 30*time.Second {
-		return t.cachedBlockhash
-	}
-
-	return solana.Hash{}
-}
-
-func (t *Trader) blockhashUpdater() {
-	ticker := time.NewTicker(10 * time.Second) // Обновляем каждые 10 секунд
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			recent, err := t.rpcClient.GetLatestBlockhash(ctx)
-			cancel()
-
-			if err == nil {
-				t.blockhashMutex.Lock()
-				t.cachedBlockhash = recent
-				t.blockhashTimestamp = time.Now()
-				t.blockhashMutex.Unlock()
-			}
+			Success: false,
+			Error:   "buy result is nil",
 		}
 	}
+
+	return &TradeResult{
+		Success:      buyResult.Success,
+		Signature:    buyResult.Signature,
+		AmountSOL:    buyResult.AmountSOL,
+		AmountTokens: buyResult.AmountTokens,
+		Price:        buyResult.Price,
+		Error:        buyResult.Error,
+		TradeTime:    buyResult.BuyTime.Milliseconds(),
+	}
 }
 
-// Статистика и мониторинг
+// updateStatistics updates trader statistics
 func (t *Trader) updateStatistics(startTime time.Time, success bool) {
-	tradeTime := time.Since(startTime)
 	t.lastTradeTime = time.Now()
-
 	t.totalTrades++
+
 	if success {
 		t.successfulTrades++
 	}
-
-	if tradeTime < t.fastestTrade {
-		t.fastestTrade = tradeTime
-	}
-
-	// Обновляем среднее время
-	if t.totalTrades == 1 {
-		t.averageTradeTime = tradeTime
-	} else {
-		// Экспоненциальное скользящее среднее
-		alpha := 0.1
-		t.averageTradeTime = time.Duration(float64(t.averageTradeTime)*(1-alpha) + float64(tradeTime)*alpha)
-	}
 }
 
-// Реализация TraderInterface
+// Start starts the trader (if needed)
+func (t *Trader) Start() error {
+	t.logger.WithFields(map[string]interface{}{
+		"trader_type":       t.GetTraderType(),
+		"skip_validation":   t.skipValidation,
+		"auto_sell_enabled": t.seller.IsEnabled(),
+		"token_based":       t.config.IsTokenBasedTrading(),
+		"buy_amount_sol":    t.config.Trading.BuyAmountSOL,
+		"buy_amount_tokens": t.config.Trading.BuyAmountTokens,
+		"sell_delay_ms":     t.config.Trading.SellDelayMs,
+	}).Info("🚀 Starting trader")
+
+	return nil
+}
+
+// Stop stops the trader and logs final statistics
 func (t *Trader) Stop() {
 	uptime := time.Since(t.startTime)
+
 	t.logger.WithFields(map[string]interface{}{
 		"total_trades":       t.totalTrades,
 		"successful_trades":  t.successfulTrades,
-		"auto_sells":         t.autoSells,
-		"fastest_trade_ms":   t.fastestTrade.Milliseconds(),
-		"average_trade_ms":   t.averageTradeTime.Milliseconds(),
 		"rejected_by_timing": t.rejectedByTiming,
 		"stale_tokens":       t.staleTokens,
 		"uptime":             uptime.String(),
-		"ultra_fast":         true,
-	}).Info("🛑 Ultra-fast trader stopped")
+		"trader_type":        t.GetTraderType(),
+	}).Info("🛑 Trader stopped")
 }
 
+// GetTradingStats returns comprehensive trading statistics
 func (t *Trader) GetTradingStats() map[string]interface{} {
 	successRate := float64(0)
 	if t.totalTrades > 0 {
@@ -517,51 +279,115 @@ func (t *Trader) GetTradingStats() map[string]interface{} {
 	uptime := time.Since(t.startTime)
 
 	stats := map[string]interface{}{
-		"trader_active":     true,
-		"mode":              "ultra_fast",
-		"trader_type":       "ultra_fast_with_auto_sell",
-		"total_trades":      t.totalTrades,
-		"successful_trades": t.successfulTrades,
-		"auto_sells":        t.autoSells,
-		"success_rate":      fmt.Sprintf("%.1f%%", successRate),
-		"fastest_trade_ms":  t.fastestTrade.Milliseconds(),
-		"average_trade_ms":  t.averageTradeTime.Milliseconds(),
-		"skip_validation":   t.skipValidation,
-		"cached_blockhash":  !t.getCachedBlockhash().IsZero(),
-		"uptime_seconds":    uptime.Seconds(),
+		"trader_active":      true,
+		"trader_type":        t.GetTraderType(),
+		"total_trades":       t.totalTrades,
+		"successful_trades":  t.successfulTrades,
+		"success_rate":       fmt.Sprintf("%.1f%%", successRate),
+		"skip_validation":    t.skipValidation,
+		"uptime_seconds":     uptime.Seconds(),
+		"rejected_by_timing": t.rejectedByTiming,
+		"stale_tokens":       t.staleTokens,
 
-		// UPDATED: New trading method info
-		"token_based_trading": t.config.IsTokenBasedTrading(),
-		"buy_amount_sol":      t.config.Trading.BuyAmountSOL,
-		"buy_amount_tokens":   t.config.Trading.BuyAmountTokens,
-		"use_token_amount":    t.config.Trading.UseTokenAmount,
-
+		// Trading configuration
+		"token_based_trading":    t.config.IsTokenBasedTrading(),
+		"buy_amount_sol":         t.config.Trading.BuyAmountSOL,
+		"buy_amount_tokens":      t.config.Trading.BuyAmountTokens,
 		"slippage_bp":            t.config.Trading.SlippageBP,
-		"rejected_by_timing":     t.rejectedByTiming,
-		"stale_tokens":           t.staleTokens,
 		"max_token_age_ms":       t.config.Trading.MaxTokenAgeMs,
 		"min_discovery_delay_ms": t.config.Trading.MinDiscoveryDelayMs,
 
-		// UPDATED: Auto-sell with milliseconds
-		"auto_sell_delay_ms": t.config.Trading.SellDelayMs,
+		// Auto-sell configuration
+		"auto_sell_enabled":    t.seller.IsEnabled(),
+		"sell_delay_ms":        t.config.Trading.SellDelayMs,
+		"sell_percentage":      t.config.Trading.SellPercentage,
+		"close_ata_after_sell": t.config.Trading.CloseATAAfterSell,
 	}
 
-	// Add auto-sell stats
-	if t.autoSeller != nil {
-		autoSellStats := t.autoSeller.GetStats()
-		for k, v := range autoSellStats {
-			stats["auto_sell_"+k] = v
-		}
+	// Add buyer stats
+	buyerStats := t.buyer.GetStats()
+	for k, v := range buyerStats {
+		stats["buyer_"+k] = v
+	}
+
+	// Add seller stats
+	sellerStats := t.seller.GetStats()
+	for k, v := range sellerStats {
+		stats["seller_"+k] = v
 	}
 
 	return stats
 }
 
+// GetTraderType returns the trader type
 func (t *Trader) GetTraderType() string {
-	return "ultra_fast_with_auto_sell"
+	traderType := "standard"
+
+	if t.config.UltraFast.Enabled {
+		traderType = "ultra_fast"
+	}
+
+	if t.seller.IsEnabled() {
+		traderType += "_with_auto_sell"
+	}
+
+	if t.config.IsTokenBasedTrading() {
+		traderType += "_token_based"
+	} else {
+		traderType += "_sol_based"
+	}
+
+	return traderType
 }
 
-// GetAutoSeller returns the auto-seller instance (for external configuration)
-func (t *Trader) GetAutoSeller() *AutoSeller {
-	return t.autoSeller
+// ValidateTokenEvent validates a token event (if needed)
+func (t *Trader) ValidateTokenEvent(tokenEvent *TokenEvent) error {
+	if tokenEvent == nil {
+		return fmt.Errorf("token event is nil")
+	}
+
+	if tokenEvent.Mint.IsZero() {
+		return fmt.Errorf("invalid mint address")
+	}
+
+	if tokenEvent.BondingCurve.IsZero() {
+		return fmt.Errorf("invalid bonding curve address")
+	}
+
+	if tokenEvent.Name == "" {
+		return fmt.Errorf("token name is empty")
+	}
+
+	if tokenEvent.Symbol == "" {
+		return fmt.Errorf("token symbol is empty")
+	}
+
+	return nil
+}
+
+// GetBuyer returns the buyer instance
+func (t *Trader) GetBuyer() *Buyer {
+	return t.buyer
+}
+
+// GetSeller returns the seller instance
+func (t *Trader) GetSeller() *Seller {
+	return t.seller
+}
+
+// UpdateConfig updates the trader configuration
+func (t *Trader) UpdateConfig(config *config.Config) {
+	t.config = config
+	t.skipValidation = config.Strategy.YoloMode
+
+	// Update seller configuration
+	t.seller.UpdateConfig(config)
+
+	t.logger.WithFields(map[string]interface{}{
+		"skip_validation":   t.skipValidation,
+		"auto_sell_enabled": t.seller.IsEnabled(),
+		"token_based":       config.IsTokenBasedTrading(),
+		"buy_amount_sol":    config.Trading.BuyAmountSOL,
+		"buy_amount_tokens": config.Trading.BuyAmountTokens,
+	}).Info("🔄 Trader configuration updated")
 }

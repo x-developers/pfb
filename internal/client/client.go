@@ -6,6 +6,7 @@ import (
 	associatedtokenaccount "github.com/gagliardetto/solana-go/programs/associated-token-account"
 	confirm "github.com/gagliardetto/solana-go/rpc/sendAndConfirmTransaction"
 	"github.com/gagliardetto/solana-go/rpc/ws"
+	"sync"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
@@ -13,11 +14,17 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// Client represents a Solana RPC client wrapper
+// Client represents a Solana RPC client wrapper with blockhash caching
 type Client struct {
 	client   *rpc.Client
 	wsClient *ws.Client
 	logger   *logrus.Logger
+
+	// Blockhash caching
+	cachedBlockhash    solana.Hash
+	blockhashTimestamp time.Time
+	blockhashMutex     sync.RWMutex
+	blockhashTTL       time.Duration
 }
 
 // ClientConfig contains configuration for Solana client
@@ -28,7 +35,7 @@ type ClientConfig struct {
 	Timeout     time.Duration
 }
 
-// NewClient creates a new Solana RPC client
+// NewClient creates a new Solana RPC client with blockhash caching
 func NewClient(config ClientConfig, logger *logrus.Logger) *Client {
 	if config.Timeout == 0 {
 		config.Timeout = 30 * time.Second
@@ -46,18 +53,105 @@ func NewClient(config ClientConfig, logger *logrus.Logger) *Client {
 			"Content-Type": "application/json",
 			"Connection":   "keep-alive",
 		})
-
-		//rpcClient = rpc.New(config.RPCEndpoint)
 	}
 
 	wsClient, _ := ws.Connect(context.Background(), config.WSEndpoint)
 
-	return &Client{
-		client:   rpcClient,
-		wsClient: wsClient,
-		logger:   logger,
+	client := &Client{
+		client:       rpcClient,
+		wsClient:     wsClient,
+		logger:       logger,
+		blockhashTTL: 30 * time.Second, // Blockhash is valid for ~60-90 seconds, cache for 30
+	}
+
+	// Start blockhash updater in background
+	go client.blockhashUpdater()
+
+	return client
+}
+
+// GetLatestBlockhash returns cached blockhash or fetches new one
+func (c *Client) GetLatestBlockhash(ctx context.Context) (solana.Hash, error) {
+	// Try to use cached blockhash first
+	if cachedHash := c.getCachedBlockhash(); !cachedHash.IsZero() {
+		return cachedHash, nil
+	}
+
+	// Fetch new blockhash
+	result, err := c.client.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
+	if err != nil {
+		return solana.Hash{}, fmt.Errorf("getLatestBlockhash failed: %w", err)
+	}
+
+	// Cache the new blockhash
+	c.cacheBlockhash(result.Value.Blockhash)
+
+	return result.Value.Blockhash, nil
+}
+
+// getCachedBlockhash returns cached blockhash if it's still valid
+func (c *Client) getCachedBlockhash() solana.Hash {
+	c.blockhashMutex.RLock()
+	defer c.blockhashMutex.RUnlock()
+
+	// Check if cache is still valid
+	if time.Since(c.blockhashTimestamp) < c.blockhashTTL && !c.cachedBlockhash.IsZero() {
+		return c.cachedBlockhash
+	}
+
+	return solana.Hash{}
+}
+
+// cacheBlockhash stores blockhash in cache
+func (c *Client) cacheBlockhash(blockhash solana.Hash) {
+	c.blockhashMutex.Lock()
+	defer c.blockhashMutex.Unlock()
+
+	c.cachedBlockhash = blockhash
+	c.blockhashTimestamp = time.Now()
+
+	c.logger.Debug("🔗 Blockhash cached")
+}
+
+// blockhashUpdater periodically updates the cached blockhash
+func (c *Client) blockhashUpdater() {
+	ticker := time.NewTicker(15 * time.Second) // Update every 15 seconds
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+			result, err := c.client.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
+			if err == nil {
+				c.cacheBlockhash(result.Value.Blockhash)
+				c.logger.Debug("🔄 Blockhash updated in background")
+			} else {
+				c.logger.WithError(err).Debug("Failed to update blockhash in background")
+			}
+
+			cancel()
+		}
 	}
 }
+
+// GetBlockhashCacheInfo returns information about blockhash cache
+func (c *Client) GetBlockhashCacheInfo() map[string]interface{} {
+	c.blockhashMutex.RLock()
+	defer c.blockhashMutex.RUnlock()
+
+	return map[string]interface{}{
+		"cached":      !c.cachedBlockhash.IsZero(),
+		"cached_at":   c.blockhashTimestamp,
+		"age_seconds": time.Since(c.blockhashTimestamp).Seconds(),
+		"ttl_seconds": c.blockhashTTL.Seconds(),
+		"is_valid":    time.Since(c.blockhashTimestamp) < c.blockhashTTL,
+		"blockhash":   c.cachedBlockhash.String(),
+	}
+}
+
+// Rest of the client methods remain the same...
 
 // GetAccountInfo gets account information
 func (c *Client) GetAccountInfo(ctx context.Context, address string) (*rpc.GetAccountInfoResult, error) {
@@ -125,15 +219,7 @@ func (c *Client) GetBlock(ctx context.Context, slot uint64) (*rpc.GetBlockResult
 	return result, nil
 }
 
-func (c *Client) GetLatestBlockhash(ctx context.Context) (solana.Hash, error) {
-	result, err := c.client.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
-	if err != nil {
-		return solana.Hash{}, fmt.Errorf("getLatestBlockhash failed: %w", err)
-	}
-
-	return result.Value.Blockhash, nil
-}
-
+// SendAndConfirmTransaction sends a transaction and confirms it
 func (c *Client) SendAndConfirmTransaction(ctx context.Context, transaction *solana.Transaction) (solana.Signature, error) {
 	sig, err := confirm.SendAndConfirmTransaction(
 		ctx,
@@ -148,8 +234,9 @@ func (c *Client) SendAndConfirmTransaction(ctx context.Context, transaction *sol
 	return sig, nil
 }
 
+// CreateATA creates an Associated Token Account
 func (c *Client) CreateATA(pub solana.PublicKey, priv solana.PrivateKey, mintAddress solana.PublicKey) (*solana.PublicKey, error) {
-	// Находим адрес ATA
+	// Find ATA address
 	ataAddress, _, err := solana.FindAssociatedTokenAddress(
 		pub,
 		mintAddress,
@@ -158,39 +245,38 @@ func (c *Client) CreateATA(pub solana.PublicKey, priv solana.PrivateKey, mintAdd
 		return nil, fmt.Errorf("failed to find ATA address: %w", err)
 	}
 
-	// Проверяем, существует ли уже ATA
-	//_, err = aw.client.GetAccountInfo(context.TODO(), ataAddress)
-	//if err == nil {
-	//	// ATA уже существует
-	//	fmt.Printf("ATA already exists: %s\n", ataAddress.String())
-	//	aw.ataAccounts[mintAddress.String()] = ataAddress
-	//	return &ataAddress, nil
-	//}
+	// Check if ATA already exists
+	_, err = c.client.GetAccountInfo(context.TODO(), ataAddress)
+	if err == nil {
+		// ATA already exists
+		c.logger.WithField("ata_address", ataAddress.String()).Debug("ATA already exists")
+		return &ataAddress, nil
+	}
 
-	// Создаем инструкцию для создания ATA
+	// Create instruction for ATA creation
 	instruction := associatedtokenaccount.NewCreateInstruction(
 		pub,         // payer
 		pub,         // wallet
 		mintAddress, // mint
 	).Build()
 
-	// Получаем последний blockhash
-	recent, err := c.client.GetLatestBlockhash(context.TODO(), rpc.CommitmentFinalized)
+	// Get latest blockhash (will use cache if available)
+	recent, err := c.GetLatestBlockhash(context.TODO())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get latest blockhash: %w", err)
 	}
 
-	// Создаем транзакцию
+	// Create transaction
 	tx, err := solana.NewTransaction(
 		[]solana.Instruction{instruction},
-		recent.Value.Blockhash,
+		recent,
 		solana.TransactionPayer(pub),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transaction: %w", err)
 	}
 
-	// Подписываем транзакцию
+	// Sign transaction
 	_, err = tx.Sign(
 		func(key solana.PublicKey) *solana.PrivateKey {
 			if pub.Equals(key) {
@@ -204,7 +290,7 @@ func (c *Client) CreateATA(pub solana.PublicKey, priv solana.PrivateKey, mintAdd
 		return nil, fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
-	// Отправляем транзакцию
+	// Send transaction
 	sig, err := confirm.SendAndConfirmTransaction(
 		context.TODO(),
 		c.client,
@@ -215,8 +301,10 @@ func (c *Client) CreateATA(pub solana.PublicKey, priv solana.PrivateKey, mintAdd
 		return nil, fmt.Errorf("failed to send transaction: %w", err)
 	}
 
-	fmt.Printf("ATA created successfully! Transaction: %s\n", sig.String())
-	fmt.Printf("ATA Address: %s\n", ataAddress.String())
+	c.logger.WithFields(map[string]interface{}{
+		"signature":   sig.String(),
+		"ata_address": ataAddress.String(),
+	}).Info("✅ ATA created successfully")
 
 	return &ataAddress, nil
 }

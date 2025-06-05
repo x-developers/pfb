@@ -7,18 +7,18 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"pump-fun-bot-go/internal/client"
 	"strings"
 	"syscall"
 	"time"
 
+	"pump-fun-bot-go/internal/client"
 	"pump-fun-bot-go/internal/config"
 	"pump-fun-bot-go/internal/logger"
 	"pump-fun-bot-go/internal/pumpfun"
 	"pump-fun-bot-go/internal/wallet"
 )
 
-const Version = "1.5.0"
+const Version = "2.0.0"
 
 // CLI flags
 var (
@@ -40,12 +40,7 @@ var (
 	configFile   = flag.String("config", "", "Path to config file")
 	envFile      = flag.String("env", "", "Path to .env file")
 
-	// Jito flags
-	enableJito   = flag.Bool("jito", false, "Enable Jito MEV protection")
-	jitoTip      = flag.Uint64("jito-tip", 10000, "Jito tip amount in lamports")
-	jitoEndpoint = flag.String("jito-endpoint", "", "Custom Jito endpoint URL")
-
-	// Enhanced performance flags
+	// Performance flags
 	skipValidation  = flag.Bool("skip-validation", false, "Skip validation checks for maximum speed")
 	noConfirmation  = flag.Bool("no-confirm", false, "Don't wait for transaction confirmation")
 	parallelWorkers = flag.Int("parallel-workers", 1, "Number of parallel processing workers")
@@ -57,17 +52,16 @@ var (
 	benchmark  = flag.Bool("benchmark", false, "Enable benchmark mode with detailed timing")
 )
 
-// Enhanced App with Ultra-Fast support only
+// App with simplified structure without Jito
 type App struct {
 	config       *config.Config
 	logger       *logger.Logger
 	tradeLogger  *logger.TradeLogger
 	solanaClient *client.Client
 	wsClient     *client.WSClient
-	jitoClient   *client.JitoClient
 	wallet       *wallet.Wallet
 	listener     *pumpfun.Listener
-	trader       pumpfun.TraderInterface
+	trader       *pumpfun.Trader
 	priceCalc    *pumpfun.PriceCalculator
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -92,8 +86,8 @@ func main() {
 	// Apply CLI overrides to config
 	cfg := loadConfigurationWithOverrides()
 
-	// Initialize enhanced logger
-	log := initializeEnhancedLogger(cfg)
+	// Initialize logger
+	log := initializeLogger(cfg)
 
 	// Create and start application
 	app, err := NewApp(cfg, log)
@@ -136,10 +130,6 @@ func applyCliOverrides(cfg *config.Config) {
 		cfg.Strategy.HoldOnly = true
 		cfg.Trading.AutoSell = false // Disable auto-sell in hold mode
 	}
-	if *enableJito {
-		cfg.JITO.Enabled = true
-		cfg.JITO.UseForTrading = true
-	}
 
 	// Auto-sell overrides - UPDATED for milliseconds
 	if *autoSell {
@@ -152,7 +142,7 @@ func applyCliOverrides(cfg *config.Config) {
 		cfg.Trading.CloseATAAfterSell = false
 	}
 
-	// NEW: Token-based trading overrides
+	// Token-based trading overrides
 	if *useTokenAmount {
 		cfg.Trading.UseTokenAmount = true
 	}
@@ -172,7 +162,7 @@ func applyCliOverrides(cfg *config.Config) {
 		cfg.Strategy.YoloMode = true // YOLO mode implies skip validation
 	}
 
-	// Auto-sell validation - UPDATED for milliseconds
+	// Auto-sell validation
 	if cfg.Trading.AutoSell && cfg.Strategy.HoldOnly {
 		log.Println("Warning: Auto-sell disabled because hold-only mode is enabled")
 		cfg.Trading.AutoSell = false
@@ -195,7 +185,7 @@ func applyCliOverrides(cfg *config.Config) {
 	}
 }
 
-func initializeEnhancedLogger(cfg *config.Config) *logger.Logger {
+func initializeLogger(cfg *config.Config) *logger.Logger {
 	logConfig := logger.LogConfig{
 		Level:       cfg.Logging.Level,
 		Format:      cfg.Logging.Format,
@@ -213,17 +203,18 @@ func initializeEnhancedLogger(cfg *config.Config) *logger.Logger {
 	return log
 }
 
-// Enhanced NewApp with Ultra-Fast Mode only
+// NewApp creates a new application instance without Jito
 func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Initialize standard components...
+	// Initialize trade logger
 	tradeLogger, err := logger.NewTradeLogger(cfg.Logging.TradeLogDir, log)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create trade logger: %w", err)
 	}
 
+	// Initialize Solana client
 	solanaClient := client.NewClient(client.ClientConfig{
 		RPCEndpoint: cfg.RPCUrl,
 		WSEndpoint:  cfg.WSUrl,
@@ -232,17 +223,6 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 	}, log.Logger)
 
 	wsClient := client.NewWSClient(cfg.WSUrl, log.Logger)
-
-	// Initialize Jito client if enabled
-	var jitoClient *client.JitoClient
-	if cfg.JITO.Enabled {
-		jitoConfig := client.JitoClientConfig{
-			Endpoint: cfg.JITO.Endpoint,
-			APIKey:   cfg.JITO.APIKey,
-			Timeout:  30 * time.Second,
-		}
-		jitoClient = client.NewJitoClient(jitoConfig, log.Logger)
-	}
 
 	// Initialize wallet
 	var walletInstance *wallet.Wallet
@@ -261,10 +241,11 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 	priceCalc := pumpfun.NewPriceCalculator(solanaClient)
 	listener := pumpfun.NewListener(wsClient, solanaClient, log, cfg)
 
-	// Initialize trader - always ultra-fast mode
-	var trader pumpfun.TraderInterface
+	// Initialize trader (simplified without Jito)
+	var trader *pumpfun.Trader
 	if !*dryRun && walletInstance != nil {
-		trader = createTrader(cfg, walletInstance, solanaClient, jitoClient, log, tradeLogger)
+		trader = pumpfun.NewTrader(walletInstance, solanaClient, log, cfg)
+		trader.SetTradeLogger(tradeLogger)
 	}
 
 	app := &App{
@@ -273,7 +254,6 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 		tradeLogger:  tradeLogger,
 		solanaClient: solanaClient,
 		wsClient:     wsClient,
-		jitoClient:   jitoClient,
 		wallet:       walletInstance,
 		listener:     listener,
 		trader:       trader,
@@ -294,69 +274,18 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 	return app, nil
 }
 
-// createTrader creates ultra-fast trader with optional Jito protection
-func createTrader(
-	cfg *config.Config,
-	wallet *wallet.Wallet,
-	solanaClient *client.Client,
-	jitoClient *client.JitoClient,
-	log *logger.Logger,
-	tradeLogger *logger.TradeLogger,
-) pumpfun.TraderInterface {
-
-	var traderType string
-	if cfg.Trading.AutoSell {
-		traderType = "ULTRA-FAST + AUTO-SELL"
-	} else {
-		traderType = "ULTRA-FAST"
-	}
-
-	log.WithFields(map[string]interface{}{
-		"auto_sell_enabled": cfg.Trading.AutoSell,
-		"sell_delay_ms":     cfg.Trading.SellDelayMs,
-		"sell_percentage":   cfg.Trading.SellPercentage,
-		"close_ata":         cfg.Trading.CloseATAAfterSell,
-	}).Info("⚡⚡ Creating " + traderType + " trader")
-
-	baseTrader := pumpfun.NewTrader(wallet, solanaClient, log, cfg)
-
-	// Set trade logger for auto-sell functionality
-	if tradeLogger != nil {
-		baseTrader.SetTradeLogger(tradeLogger)
-	}
-
-	// Wrap with Jito protection if enabled
-	if cfg.JITO.Enabled {
-		log.Info("🛡️ Wrapping trader with Jito MEV protection")
-		jitoTrader := pumpfun.NewJitoTrader(baseTrader, jitoClient, wallet, log, cfg)
-
-		// Set Jito client for auto-sell functionality
-		if baseTrader.GetAutoSeller() != nil {
-			baseTrader.SetJitoClient(jitoClient)
-		}
-
-		return jitoTrader
-	}
-
-	return baseTrader
-}
-
-// Enhanced Start method with Ultra-Fast Mode
+// Start starts the application
 func (a *App) Start() error {
 	mode := "ULTRA-FAST"
 	if a.config.UltraFast.ParallelWorkers > 1 {
 		mode += fmt.Sprintf(" (%d workers)", a.config.UltraFast.ParallelWorkers)
 	}
 
-	if a.config.JITO.Enabled && a.config.JITO.UseForTrading {
-		mode += " + JITO PROTECTED"
-	}
-
 	if a.config.Trading.AutoSell {
 		mode += " + AUTO-SELL"
 	}
 
-	// NEW: Show trading mode
+	// Show trading mode
 	tradingMode := "SOL-BASED"
 	if a.config.IsTokenBasedTrading() {
 		tradingMode = "TOKEN-BASED"
@@ -365,10 +294,10 @@ func (a *App) Start() error {
 
 	a.logger.Info(fmt.Sprintf("🚀 Starting Pump.fun Bot v%s (%s MODE)", Version, mode))
 
-	// Log auto-sell configuration - UPDATED for milliseconds
+	// Log auto-sell configuration
 	if a.config.Trading.AutoSell {
 		a.logger.WithFields(map[string]interface{}{
-			"sell_delay_ms":     a.config.Trading.SellDelayMs, // CHANGED: now in milliseconds
+			"sell_delay_ms":     a.config.Trading.SellDelayMs,
 			"sell_percentage":   a.config.Trading.SellPercentage,
 			"close_ata":         a.config.Trading.CloseATAAfterSell,
 			"auto_sell_enabled": true,
@@ -383,14 +312,16 @@ func (a *App) Start() error {
 		a.logger.Info("🚫 Auto-sell is disabled - tokens will be held")
 	}
 
-	balance, err := a.wallet.GetBalanceSOL(a.ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get balance: %w", err)
+	// Get wallet balance if available
+	if a.wallet != nil {
+		balance, err := a.wallet.GetBalanceSOL(a.ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get balance: %w", err)
+		}
+		a.logger.Info(fmt.Sprintf("💰 Balance: %v SOL", balance))
 	}
 
-	a.logger.Info(fmt.Sprintf("⚠️ Balance: %v SOL", balance))
-
-	// NEW: Log trading configuration
+	// Log trading configuration
 	if a.config.IsTokenBasedTrading() {
 		a.logger.WithFields(map[string]interface{}{
 			"buy_amount_tokens": a.config.Trading.BuyAmountTokens,
@@ -404,14 +335,15 @@ func (a *App) Start() error {
 			"balance_checks": "enabled",
 		}).Info("💰 SOL-based trading enabled")
 	}
-	// Test connections and start components...
+
+	// Test connections and start components
 	if err := a.testConnections(); err != nil {
 		return fmt.Errorf("connection test failed: %w", err)
 	}
 
 	// Start trader
-	if starter, ok := a.trader.(interface{ Start() error }); ok {
-		if err := starter.Start(); err != nil {
+	if a.trader != nil {
+		if err := a.trader.Start(); err != nil {
 			return fmt.Errorf("failed to start trader: %w", err)
 		}
 	}
@@ -530,6 +462,11 @@ func (a *App) processTokenUltraFast(tokenEvent *pumpfun.TokenEvent, workerID int
 
 // executeUltraFastTrade executes trade with detailed timing
 func (a *App) executeUltraFastTrade(tokenEvent *pumpfun.TokenEvent, discoveryTime time.Time, workerID int) {
+	if a.trader == nil {
+		a.logger.WithField("worker_id", workerID).Debug("🔄 Dry run mode - no actual trade")
+		return
+	}
+
 	tradeStart := time.Now()
 	discoveryLag := tradeStart.Sub(discoveryTime)
 
@@ -608,7 +545,7 @@ func (a *App) updateProcessingStats(processingTime time.Duration, success bool) 
 // runUltraFastMode handles parallel token processing
 func (a *App) runUltraFastMode() error {
 	tokenChan := a.listener.GetTokenChannel()
-	statsTicker := time.NewTicker(30 * time.Second) // More frequent stats in ultra-fast mode
+	statsTicker := time.NewTicker(30 * time.Second)
 	defer statsTicker.Stop()
 
 	workerIndex := 0
@@ -658,13 +595,12 @@ func (a *App) runStandardMode() error {
 			a.processTokenUltraFast(tokenEvent, 0)
 
 		case <-statsTicker.C:
-			// Standard stats logging
 			a.logStandardStats()
 		}
 	}
 }
 
-// Enhanced logUltraFastStats with auto-sell statistics
+// logUltraFastStats logs performance statistics
 func (a *App) logUltraFastStats() {
 	stats := map[string]interface{}{
 		"tokens_discovered":     a.processingStats.TokensDiscovered,
@@ -674,7 +610,7 @@ func (a *App) logUltraFastStats() {
 		"workers":               len(a.tokenWorkers),
 	}
 
-	// Add trader stats including auto-sell
+	// Add trader stats if available
 	if a.trader != nil {
 		traderStats := a.trader.GetTradingStats()
 		for k, v := range traderStats {
@@ -687,11 +623,36 @@ func (a *App) logUltraFastStats() {
 		stats[fmt.Sprintf("worker_%d_avg_ms", workerID)] = utilization
 	}
 
-	a.logger.WithFields(stats).Info("⚡⚡ Ultra-Fast Performance Statistics (with Auto-Sell)")
+	// Add blockhash cache info
+	cacheInfo := a.solanaClient.GetBlockhashCacheInfo()
+	for k, v := range cacheInfo {
+		stats["blockhash_"+k] = v
+	}
+
+	a.logger.WithFields(stats).Info("⚡⚡ Ultra-Fast Performance Statistics")
 }
+
 func (a *App) logStandardStats() {
-	// Standard statistics logging (existing implementation)
-	a.logger.Info("📊 Standard Statistics")
+	stats := map[string]interface{}{
+		"tokens_discovered": a.processingStats.TokensDiscovered,
+		"tokens_processed":  a.processingStats.TokensProcessed,
+	}
+
+	// Add trader stats if available
+	if a.trader != nil {
+		traderStats := a.trader.GetTradingStats()
+		for k, v := range traderStats {
+			stats["trader_"+k] = v
+		}
+	}
+
+	// Add blockhash cache info
+	cacheInfo := a.solanaClient.GetBlockhashCacheInfo()
+	for k, v := range cacheInfo {
+		stats["blockhash_"+k] = v
+	}
+
+	a.logger.WithFields(stats).Info("📊 Standard Statistics")
 }
 
 // testConnections tests network connectivity
@@ -707,6 +668,10 @@ func (a *App) testConnections() error {
 
 	a.logger.Info("✅ RPC connection test passed")
 
+	// Test blockhash caching
+	cacheInfo := a.solanaClient.GetBlockhashCacheInfo()
+	a.logger.WithFields(cacheInfo).Info("🔗 Blockhash cache status")
+
 	return nil
 }
 
@@ -719,6 +684,11 @@ func (a *App) shutdown() {
 		close(workerChan)
 	}
 
+	// Stop trader
+	if a.trader != nil {
+		a.trader.Stop()
+	}
+
 	// Log final statistics
 	if a.config.UltraFast.Enabled {
 		a.logger.WithFields(map[string]interface{}{
@@ -728,6 +698,10 @@ func (a *App) shutdown() {
 			"average_latency_ms":    a.processingStats.AverageLatency,
 		}).Info("📊 Final Ultra-Fast Statistics")
 	}
+
+	// Log blockhash cache final status
+	cacheInfo := a.solanaClient.GetBlockhashCacheInfo()
+	a.logger.WithFields(cacheInfo).Info("🔗 Final blockhash cache status")
 
 	a.logger.Info("✅ Shutdown complete")
 }
