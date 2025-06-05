@@ -83,9 +83,7 @@ func (bl *BlockListener) Start() error {
 	if err := bl.wsClient.Connect(); err != nil {
 		return fmt.Errorf("failed to connect WebSocket: %w", err)
 	}
-
-	// Subscribe to block notifications
-	_, err := bl.wsClient.SubscribeToBlocks(bl.handleBlockNotification)
+	_, err := bl.wsClient.SubscribeToBlocks(bl.pumpFunProgramID, bl.handleBlockNotification)
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to blocks: %w", err)
 	}

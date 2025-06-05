@@ -64,142 +64,6 @@ type ListenerStats struct {
 	UpTime              string  `json:"uptime"`
 }
 
-// MultiListener combines multiple listeners for comprehensive token discovery
-type MultiListener struct {
-	listeners []ListenerInterface
-	config    *ListenerConfig
-	tokenChan chan *TokenEvent
-	running   bool
-}
-
-// NewMultiListener creates a new multi-listener that combines different listener types
-func NewMultiListener(config *ListenerConfig, listeners ...ListenerInterface) *MultiListener {
-	return &MultiListener{
-		listeners: listeners,
-		config:    config,
-		tokenChan: make(chan *TokenEvent, config.BufferSize*len(listeners)),
-		running:   false,
-	}
-}
-
-// Start starts all listeners
-func (ml *MultiListener) Start() error {
-	ml.running = true
-
-	// Start all listeners
-	for _, listener := range ml.listeners {
-		if err := listener.Start(); err != nil {
-			ml.config.Logger.WithError(err).Error("Failed to start listener")
-			continue
-		}
-	}
-
-	// Start token event aggregation
-	go ml.aggregateTokenEvents()
-
-	ml.config.Logger.WithField("listener_count", len(ml.listeners)).Info("🚀 MultiListener started")
-	return nil
-}
-
-// Stop stops all listeners
-func (ml *MultiListener) Stop() error {
-	ml.running = false
-
-	for _, listener := range ml.listeners {
-		if err := listener.Stop(); err != nil {
-			ml.config.Logger.WithError(err).Error("Failed to stop listener")
-		}
-	}
-
-	close(ml.tokenChan)
-	ml.config.Logger.Info("🛑 MultiListener stopped")
-	return nil
-}
-
-// GetTokenChannel returns the aggregated token channel
-func (ml *MultiListener) GetTokenChannel() <-chan *TokenEvent {
-	return ml.tokenChan
-}
-
-// GetStats returns combined statistics from all listeners
-func (ml *MultiListener) GetStats() map[string]interface{} {
-	stats := map[string]interface{}{
-		"listener_type":  "multi",
-		"is_running":     ml.running,
-		"listener_count": len(ml.listeners),
-		"listeners":      make(map[string]interface{}),
-	}
-
-	totalTokens := int64(0)
-	totalProcessed := int64(0)
-
-	for _, listener := range ml.listeners {
-		listenerStats := listener.GetStats()
-		stats["listeners"].(map[string]interface{})[listener.GetListenerType()] = listenerStats
-
-		// Aggregate totals
-		if tokens, ok := listenerStats["tokens_discovered"].(int64); ok {
-			totalTokens += tokens
-		}
-		if processed, ok := listenerStats["tokens_processed"].(int64); ok {
-			totalProcessed += processed
-		}
-	}
-
-	stats["total_tokens_discovered"] = totalTokens
-	stats["total_tokens_processed"] = totalProcessed
-
-	return stats
-}
-
-// GetListenerType returns the listener type
-func (ml *MultiListener) GetListenerType() string {
-	return "multi"
-}
-
-// IsRunning returns whether the multi-listener is running
-func (ml *MultiListener) IsRunning() bool {
-	return ml.running
-}
-
-// aggregateTokenEvents aggregates token events from all listeners
-func (ml *MultiListener) aggregateTokenEvents() {
-	seenTokens := make(map[string]bool) // Deduplication by mint address
-
-	for ml.running {
-		for _, listener := range ml.listeners {
-			select {
-			case token, ok := <-listener.GetTokenChannel():
-				if !ok {
-					continue
-				}
-
-				// Deduplicate tokens by mint address
-				mintKey := token.Mint.String()
-				if seenTokens[mintKey] {
-					ml.config.Logger.WithField("mint", mintKey).Debug("🔄 Duplicate token filtered")
-					continue
-				}
-
-				seenTokens[mintKey] = true
-
-				// Add source information
-				token.SetMetadata("original_source", token.Source)
-				token.SetMetadata("listener_type", listener.GetListenerType())
-
-				select {
-				case ml.tokenChan <- token:
-					ml.config.Logger.WithFields(token.LogFields()).Debug("📦 Token aggregated from " + listener.GetListenerType())
-				default:
-					ml.config.Logger.Warn("⚠️ Token channel full, dropping event")
-				}
-			default:
-				// Non-blocking, continue to next listener
-			}
-		}
-	}
-}
-
 // FilteredListener wraps another listener with filtering capabilities
 type FilteredListener struct {
 	baseListener ListenerInterface
@@ -278,17 +142,35 @@ func (fl *FilteredListener) IsRunning() bool {
 
 // filterTokenEvents filters token events based on configured filters
 func (fl *FilteredListener) filterTokenEvents() {
+	defer fl.config.Logger.Debug("🛑 Filter goroutine stopped")
+
+	fl.config.Logger.Info("🔍 Starting token filtering goroutine")
+
 	for fl.running {
 		select {
 		case token, ok := <-fl.baseListener.GetTokenChannel():
 			if !ok {
+				fl.config.Logger.Info("📬 Base listener channel closed, stopping filter")
 				return
 			}
 
+			fl.config.Logger.WithFields(map[string]interface{}{
+				"mint":   token.Mint.String(),
+				"name":   token.Name,
+				"symbol": token.Symbol,
+				"source": token.Source,
+			}).Debug("🔍 Received token for filtering")
+
 			// Apply all filters
 			passed := true
-			for _, filter := range fl.filters {
+			for i, filter := range fl.filters {
 				if !filter(token) {
+					fl.config.Logger.WithFields(map[string]interface{}{
+						"mint":      token.Mint.String(),
+						"filter_id": i,
+						"name":      token.Name,
+						"symbol":    token.Symbol,
+					}).Debug("🚫 Token filtered out")
 					passed = false
 					break
 				}
@@ -297,12 +179,25 @@ func (fl *FilteredListener) filterTokenEvents() {
 			if passed {
 				select {
 				case fl.tokenChan <- token:
-					fl.config.Logger.WithFields(token.LogFields()).Debug("✅ Token passed filters")
+					fl.config.Logger.WithFields(map[string]interface{}{
+						"mint":   token.Mint.String(),
+						"name":   token.Name,
+						"symbol": token.Symbol,
+					}).Info("✅ Token passed all filters")
 				default:
-					fl.config.Logger.Warn("⚠️ Filtered token channel full, dropping event")
+					fl.config.Logger.WithFields(map[string]interface{}{
+						"mint":   token.Mint.String(),
+						"age_ms": token.GetAgeMs(),
+					}).Warn("⚠️ Filtered token channel full, dropping event")
 				}
-			} else {
-				fl.config.Logger.WithFields(token.LogFields()).Debug("🚫 Token filtered out")
+			}
+
+		case <-time.After(5 * time.Second):
+			// Периодически логируем что мы живы
+			fl.config.Logger.Debug("🔍 Filter goroutine is alive, waiting for tokens...")
+			if !fl.running {
+				fl.config.Logger.Debug("🛑 Filter goroutine stopping due to running=false")
+				return
 			}
 		}
 	}
@@ -353,20 +248,5 @@ func FreshnessFilter(maxAge time.Duration) TokenFilter {
 func ConfirmedFilter() TokenFilter {
 	return func(token *TokenEvent) bool {
 		return token.IsConfirmed
-	}
-}
-
-// SourceFilter creates a filter that only allows tokens from specific sources
-func SourceFilter(allowedSources []string) TokenFilter {
-	sourceMap := make(map[string]bool)
-	for _, source := range allowedSources {
-		sourceMap[source] = true
-	}
-
-	return func(token *TokenEvent) bool {
-		if len(sourceMap) == 0 {
-			return true
-		}
-		return sourceMap[token.Source]
 	}
 }

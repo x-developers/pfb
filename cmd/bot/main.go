@@ -34,12 +34,10 @@ var (
 	buyAmountTokens = flag.Uint64("buy-tokens", 1000000, "Amount of tokens to buy")
 	buyAmountSOL    = flag.Float64("buy-sol", 0.01, "Amount of SOL to spend")
 
-	matchPattern = flag.String("match", "", "Filter tokens by name pattern")
-	network      = flag.String("network", "", "Network to use (mainnet/devnet)")
-	logLevel     = flag.String("log-level", "", "Log level (debug/info/warn/error)")
-	dryRun       = flag.Bool("dry-run", false, "Dry run mode (no actual trades)")
-	configFile   = flag.String("config", "", "Path to config file")
-	envFile      = flag.String("env", "", "Path to .env file")
+	network    = flag.String("network", "", "Network to use (mainnet/devnet)")
+	dryRun     = flag.Bool("dry-run", false, "Dry run mode (no actual trades)")
+	configFile = flag.String("config", "", "Path to config file")
+	envFile    = flag.String("env", "", "Path to .env file")
 
 	// Listener flags
 	listenerType        = flag.String("listener", "", "Listener type (logs/blocks/multi)")
@@ -47,15 +45,7 @@ var (
 	enableBlockListener = flag.Bool("enable-blocks", false, "Enable blocks listener (for multi-listener)")
 
 	// Performance flags
-	skipValidation  = flag.Bool("skip-validation", false, "Skip validation checks for maximum speed")
-	noConfirmation  = flag.Bool("no-confirm", false, "Don't wait for transaction confirmation")
-	parallelWorkers = flag.Int("parallel-workers", 1, "Number of parallel processing workers")
-	cacheBlockhash  = flag.Bool("cache-blockhash", true, "Cache blockhash for speed")
-	fireAndForget   = flag.Bool("fire-and-forget", false, "Send transactions without waiting")
-
-	// Performance flags
-	logLatency = flag.Bool("log-latency", false, "Log detailed latency information")
-	benchmark  = flag.Bool("benchmark", false, "Enable benchmark mode with detailed timing")
+	skipValidation = flag.Bool("skip-validation", false, "Skip validation checks for maximum speed")
 )
 
 // App with listener factory integration
@@ -156,8 +146,6 @@ func applyCliOverrides(cfg *config.Config) {
 			cfg.Listener.Type = config.LogsListenerType
 		case "blocks":
 			cfg.Listener.Type = config.BlocksListenerType
-		case "multi":
-			cfg.Listener.Type = config.MultiListenerType
 		default:
 			log.Printf("Warning: Invalid listener type '%s', using default", *listenerType)
 		}
@@ -169,8 +157,6 @@ func applyCliOverrides(cfg *config.Config) {
 	if *enableBlockListener {
 		cfg.Listener.EnableBlockListener = true
 	}
-
-	// Auto-sell overrides - UPDATED for milliseconds
 	if *autoSell {
 		cfg.Trading.AutoSell = true
 	}
@@ -180,8 +166,6 @@ func applyCliOverrides(cfg *config.Config) {
 	if !*closeATA {
 		cfg.Trading.CloseATAAfterSell = false
 	}
-
-	// Token-based trading overrides
 	if *useTokenAmount {
 		cfg.Trading.UseTokenAmount = true
 	}
@@ -194,7 +178,6 @@ func applyCliOverrides(cfg *config.Config) {
 
 	// Ultra-Fast Mode is always enabled, but we can configure it
 	cfg.UltraFast.Enabled = true
-	cfg.UltraFast.CacheBlockhash = *cacheBlockhash
 
 	if *skipValidation {
 		cfg.UltraFast.SkipValidation = true
@@ -221,12 +204,6 @@ func applyCliOverrides(cfg *config.Config) {
 	// Log warnings for very short delays
 	if cfg.Trading.SellDelayMs < 100 {
 		log.Printf("⚠️ WARNING: Very short sell delay (%dms) is extremely risky!", cfg.Trading.SellDelayMs)
-	}
-
-	// Listener warnings
-	if cfg.Listener.Type == config.MultiListenerType && !cfg.Listener.EnableLogListener && !cfg.Listener.EnableBlockListener {
-		log.Println("Warning: Multi-listener requires at least one listener to be enabled, enabling logs listener")
-		cfg.Listener.EnableLogListener = true
 	}
 }
 
@@ -284,8 +261,6 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 
 	// Initialize listener factory
 	listenerFactory := pumpfun.NewListenerFactory(wsClient, solanaClient, cfg, log)
-
-	// Create listener based on configuration and strategy
 	listener, err := listenerFactory.CreateStrategyListener()
 	if err != nil {
 		cancel()

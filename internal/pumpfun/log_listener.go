@@ -13,7 +13,6 @@ import (
 	"pump-fun-bot-go/pkg/utils"
 
 	"github.com/gagliardetto/solana-go"
-	"github.com/mr-tron/base58"
 	"github.com/sirupsen/logrus"
 )
 
@@ -27,6 +26,8 @@ type LogListener struct {
 	pdaDerivation *utils.PumpFunPDADerivation
 	running       bool
 	startTime     time.Time
+	// Configuration
+	pumpFunProgramID solana.PublicKey
 
 	// Statistics for monitoring
 	stats *TokenEventStats
@@ -47,17 +48,20 @@ func NewLogListener(wsClient *client.WSClient, rpcClient *client.Client, cfg *co
 		NetworkType: cfg.Network,
 	}
 
+	pumpFunProgramID := solana.PublicKeyFromBytes(config.PumpFunProgramID)
+
 	return &LogListener{
-		wsClient:      wsClient,
-		rpcClient:     rpcClient,
-		config:        conf,
-		tokenChan:     make(chan *TokenEvent, conf.BufferSize),
-		ctx:           ctx,
-		cancel:        cancel,
-		pdaDerivation: utils.NewPumpFunPDADerivation(),
-		running:       false,
-		stats:         NewTokenEventStats(),
-		startTime:     time.Now(),
+		wsClient:         wsClient,
+		rpcClient:        rpcClient,
+		config:           conf,
+		tokenChan:        make(chan *TokenEvent, conf.BufferSize),
+		ctx:              ctx,
+		cancel:           cancel,
+		pdaDerivation:    utils.NewPumpFunPDADerivation(),
+		running:          false,
+		stats:            NewTokenEventStats(),
+		startTime:        time.Now(),
+		pumpFunProgramID: pumpFunProgramID,
 	}
 }
 
@@ -70,10 +74,7 @@ func (l *LogListener) Start() error {
 		return fmt.Errorf("failed to connect WebSocket: %w", err)
 	}
 
-	// Subscribe to pump.fun program logs
-	pumpFunProgramID := base58.Encode(config.PumpFunProgramID)
-
-	_, err := l.wsClient.SubscribeToLogs(pumpFunProgramID, l.handleLogsNotification)
+	_, err := l.wsClient.SubscribeToLogs(l.pumpFunProgramID, l.handleLogsNotification)
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to logs: %w", err)
 	}
@@ -82,7 +83,7 @@ func (l *LogListener) Start() error {
 	l.startTime = time.Now()
 
 	l.config.Logger.WithFields(logrus.Fields{
-		"program_id":    pumpFunProgramID,
+		"program_id":    l.pumpFunProgramID.String(),
 		"buffer_size":   l.config.BufferSize,
 		"network":       l.config.NetworkType,
 		"listener_type": "logs",
@@ -208,20 +209,19 @@ func (l *LogListener) handleLogsNotification(data interface{}) error {
 
 // processProgramLogs processes program logs to extract token creation information with timing
 func (l *LogListener) processProgramLogs(logs []string, signature string, slot uint64, discoveryTime time.Time) (*TokenEvent, error) {
-	var processLogs bool
-
-	// Check if this is a token creation
-	for _, log := range logs {
-		if strings.Contains(log, "Program log: Instruction: Create") {
-			processLogs = true
-			break
-		}
-	}
 
 	// Skip swaps as the first condition may pass them
 	for _, log := range logs {
 		if strings.Contains(log, "Program log: Instruction: CreateTokenAccount") {
-			processLogs = false
+			return nil, nil
+		}
+	}
+
+	var processLogs = false
+	// Check if this is a token creation
+	for _, log := range logs {
+		if strings.Contains(log, "Program log: Instruction: Create") {
+			processLogs = true
 			break
 		}
 	}

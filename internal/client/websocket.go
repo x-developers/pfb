@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc/jsonrpc"
 	"sync"
 	"time"
@@ -249,14 +250,16 @@ func (ws *WSClient) Unsubscribe(id int) error {
 }
 
 // SubscribeToBlocks subscribes to block notifications
-func (ws *WSClient) SubscribeToBlocks(handler EventHandler) (int, error) {
+func (ws *WSClient) SubscribeToBlocks(programID solana.PublicKey, handler EventHandler) (int, error) {
 	params := []interface{}{
-		"all",
+		map[string]interface{}{
+			"mentionsAccountOrProgram": programID.String(),
+		},
 		map[string]interface{}{
 			"commitment":                     "confirmed",
-			"encoding":                       "json",
-			"transactionDetails":             "full",
+			"encoding":                       "base64",
 			"showRewards":                    false,
+			"transactionDetails":             "full",
 			"maxSupportedTransactionVersion": 0,
 		},
 	}
@@ -265,27 +268,17 @@ func (ws *WSClient) SubscribeToBlocks(handler EventHandler) (int, error) {
 }
 
 // SubscribeToLogs subscribes to log notifications with enhanced parameters
-func (ws *WSClient) SubscribeToLogs(programID string, handler EventHandler) (int, error) {
+func (ws *WSClient) SubscribeToLogs(programID solana.PublicKey, handler EventHandler) (int, error) {
 	var params []interface{}
 
-	if programID == "all" {
-		// Subscribe to all logs
-		params = []interface{}{
-			"all",
-			map[string]interface{}{
-				"commitment": "processed",
-			},
-		}
-	} else {
-		// Subscribe to specific program
-		params = []interface{}{
-			map[string]interface{}{
-				"mentions": []string{programID},
-			},
-			map[string]interface{}{
-				"commitment": "processed",
-			},
-		}
+	// Subscribe to specific program
+	params = []interface{}{
+		map[string]interface{}{
+			"mentions": []string{programID.String()},
+		},
+		map[string]interface{}{
+			"commitment": "processed",
+		},
 	}
 
 	return ws.Subscribe("logsSubscribe", params, handler)

@@ -2,11 +2,10 @@ package pumpfun
 
 import (
 	"fmt"
-	"time"
-
 	"pump-fun-bot-go/internal/client"
 	"pump-fun-bot-go/internal/config"
 	"pump-fun-bot-go/internal/logger"
+	"time"
 
 	"github.com/sirupsen/logrus"
 )
@@ -15,11 +14,10 @@ const CREATE_DISCRIMINATOR uint64 = 8530921459188068891
 
 // ListenerFactory creates different types of listeners based on configuration
 type ListenerFactory struct {
-	wsClient    *client.WSClient
-	rpcClient   *client.Client
-	config      *config.Config
-	logger      *logger.Logger
-	listenerMap map[config.ListenerType]bool
+	wsClient  *client.WSClient
+	rpcClient *client.Client
+	config    *config.Config
+	logger    *logger.Logger
 }
 
 // NewListenerFactory creates a new listener factory
@@ -30,11 +28,10 @@ func NewListenerFactory(
 	logger *logger.Logger,
 ) *ListenerFactory {
 	return &ListenerFactory{
-		wsClient:    wsClient,
-		rpcClient:   rpcClient,
-		config:      cfg,
-		logger:      logger,
-		listenerMap: make(map[config.ListenerType]bool),
+		wsClient:  wsClient,
+		rpcClient: rpcClient,
+		config:    cfg,
+		logger:    logger,
 	}
 }
 
@@ -48,7 +45,15 @@ func (lf *ListenerFactory) CreateListener(listenerType config.ListenerType) (Lis
 	case config.BlocksListenerType:
 		return lf.createBlockListener()
 	case config.MultiListenerType:
-		return lf.createMultiListener()
+		// Для multi-listener выбираем самый подходящий тип
+		lf.logger.Info("🔄 Multi-listener requested, selecting best single listener")
+		if lf.config.UltraFast.Enabled || lf.config.Strategy.YoloMode {
+			lf.logger.Info("⚡ Using logs listener for speed")
+			return lf.createLogListener()
+		} else {
+			lf.logger.Info("📦 Using blocks listener for reliability")
+			return lf.createBlockListener()
+		}
 	default:
 		return nil, fmt.Errorf("unsupported listener type: %s", listenerType)
 	}
@@ -69,27 +74,32 @@ func (lf *ListenerFactory) CreateStrategyListener() (ListenerInterface, error) {
 		"skip_validation":    lf.config.UltraFast.SkipValidation,
 	}).Info("🎯 Strategy configuration")
 
-	// Create base listener
-	baseListener, err := lf.CreateListener(lf.config.Listener.Type)
+	// Create base listener based on strategy
+	var baseListener ListenerInterface
+	var err error
+
+	// Choose listener type based on strategy
+	if lf.config.Listener.Type == config.BlocksListenerType {
+		lf.logger.Info("📦 Using blocks listener as configured")
+		baseListener, err = lf.createBlockListener()
+	} else {
+		// Default to logs
+		lf.logger.Info("📋 Using logs listener (default)")
+		baseListener, err = lf.createLogListener()
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to create base listener: %w", err)
 	}
 
-	// Apply strategy-specific optimizations
-	optimizedListener, err := lf.applyStrategyOptimizations(baseListener)
-	if err != nil {
-		return nil, fmt.Errorf("failed to apply strategy optimizations: %w", err)
-	}
-
 	// Apply filters if configured
-	filteredListener, err := lf.applyFilters(optimizedListener)
+	filteredListener, err := lf.applyFilters(baseListener)
 	if err != nil {
 		return nil, fmt.Errorf("failed to apply filters: %w", err)
 	}
 
 	lf.logger.WithFields(logrus.Fields{
 		"final_listener_type": filteredListener.GetListenerType(),
-		"strategy_optimized":  true,
 		"filters_applied":     lf.hasFiltersConfigured(),
 	}).Info("✅ Strategy listener created successfully")
 
@@ -128,84 +138,6 @@ func (lf *ListenerFactory) createBlockListener() (ListenerInterface, error) {
 	return listener, nil
 }
 
-// createMultiListener creates a multi-listener that combines multiple listener types
-func (lf *ListenerFactory) createMultiListener() (ListenerInterface, error) {
-	lf.logger.Info("🔄 Creating multi listener...")
-
-	var listeners []ListenerInterface
-
-	// Create enabled sub-listeners
-	if lf.config.Listener.EnableLogListener {
-		logListener, err := lf.createLogListener()
-		if err != nil {
-			return nil, fmt.Errorf("failed to create log listener: %w", err)
-		}
-		listeners = append(listeners, logListener)
-		lf.logger.Info("✅ Added logs listener to multi-listener")
-	}
-
-	if lf.config.Listener.EnableBlockListener {
-		blockListener, err := lf.createBlockListener()
-		if err != nil {
-			return nil, fmt.Errorf("failed to create block listener: %w", err)
-		}
-		listeners = append(listeners, blockListener)
-		lf.logger.Info("✅ Added blocks listener to multi-listener")
-	}
-
-	if len(listeners) == 0 {
-		return nil, fmt.Errorf("no listeners enabled for multi-listener")
-	}
-
-	// Create listener config for multi-listener
-	config := &ListenerConfig{
-		Config:      lf.config,
-		Logger:      lf.logger,
-		BufferSize:  lf.config.Listener.BufferSize,
-		NetworkType: lf.config.Network,
-	}
-
-	multiListener := NewMultiListener(config, listeners...)
-
-	lf.logger.WithFields(logrus.Fields{
-		"type":             "multi",
-		"sub_listeners":    len(listeners),
-		"logs_enabled":     lf.config.Listener.EnableLogListener,
-		"blocks_enabled":   lf.config.Listener.EnableBlockListener,
-		"duplicate_filter": lf.config.Listener.EnableDuplicateFilter,
-	}).Info("✅ Multi listener created")
-
-	return multiListener, nil
-}
-
-// applyStrategyOptimizations applies strategy-specific optimizations to the listener
-func (lf *ListenerFactory) applyStrategyOptimizations(baseListener ListenerInterface) (ListenerInterface, error) {
-	lf.logger.Info("⚡ Applying strategy optimizations...")
-
-	// For ultra-fast mode, no additional wrapper needed - the main app handles parallel processing
-	if lf.config.UltraFast.Enabled {
-		lf.logger.WithFields(logrus.Fields{
-			"ultra_fast":       true,
-			"parallel_workers": lf.config.UltraFast.ParallelWorkers,
-			"skip_validation":  lf.config.UltraFast.SkipValidation,
-			"cache_blockhash":  lf.config.UltraFast.CacheBlockhash,
-		}).Info("⚡ Ultra-fast mode optimizations applied")
-	}
-
-	// For YOLO mode, ensure we get maximum speed
-	if lf.config.Strategy.YoloMode {
-		lf.logger.Info("🎲 YOLO mode optimizations applied - maximum speed, minimal validation")
-	}
-
-	// For hold-only mode, no special listener optimizations needed
-	if lf.config.Strategy.HoldOnly {
-		lf.logger.Info("🤲 Hold-only mode - all tokens will be processed")
-	}
-
-	// Return the base listener - optimizations are handled at the application level
-	return baseListener, nil
-}
-
 // applyFilters applies configured filters to the listener
 func (lf *ListenerFactory) applyFilters(baseListener ListenerInterface) (ListenerInterface, error) {
 	var filters []TokenFilter
@@ -232,12 +164,12 @@ func (lf *ListenerFactory) applyFilters(baseListener ListenerInterface) (Listene
 		lf.logger.WithField("max_age_ms", lf.config.Trading.MaxTokenAgeMs).Info("⏰ Freshness filter applied")
 	}
 
-	// Apply confirmation filter for non-YOLO modes
-	if !lf.config.Strategy.YoloMode && !lf.config.UltraFast.SkipValidation {
-		confirmedFilter := ConfirmedFilter()
-		filters = append(filters, confirmedFilter)
-		lf.logger.Info("✅ Confirmation filter applied")
-	}
+	//Apply confirmation filter for non-YOLO modes
+	//if !lf.config.Strategy.YoloMode && !lf.config.UltraFast.SkipValidation {
+	//	confirmedFilter := ConfirmedFilter()
+	//	filters = append(filters, confirmedFilter)
+	//	lf.logger.Info("✅ Confirmation filter applied")
+	//}
 
 	// If no filters, return base listener
 	if len(filters) == 0 {
@@ -279,7 +211,7 @@ func (lf *ListenerFactory) GetSupportedListenerTypes() []config.ListenerType {
 	return []config.ListenerType{
 		config.LogsListenerType,
 		config.BlocksListenerType,
-		config.MultiListenerType,
+		config.MultiListenerType, // Теперь это просто алиас для автовыбора
 	}
 }
 
@@ -291,10 +223,10 @@ func (lf *ListenerFactory) GetRecommendedListenerType() config.ListenerType {
 		return config.LogsListenerType
 	}
 
-	// For conservative strategies, prefer multi-listener for coverage
+	// For conservative strategies, prefer blocks listener for reliability
 	if lf.config.Strategy.HoldOnly || lf.config.Strategy.Type == "holder" {
-		lf.logger.Info("💡 Recommended: Multi-listener (maximum coverage)")
-		return config.MultiListenerType
+		lf.logger.Info("💡 Recommended: Blocks listener (higher reliability)")
+		return config.BlocksListenerType
 	}
 
 	// Default recommendation based on network
@@ -303,8 +235,8 @@ func (lf *ListenerFactory) GetRecommendedListenerType() config.ListenerType {
 		return config.LogsListenerType
 	}
 
-	lf.logger.Info("💡 Recommended: Multi-listener (balanced approach)")
-	return config.MultiListenerType
+	lf.logger.Info("💡 Recommended: Logs listener (balanced approach)")
+	return config.LogsListenerType
 }
 
 // CreateOptimalListener creates the optimal listener for current configuration
@@ -337,5 +269,6 @@ func (lf *ListenerFactory) GetFactoryStats() map[string]interface{} {
 		"yolo_mode":            lf.config.Strategy.YoloMode,
 		"hold_only":            lf.config.Strategy.HoldOnly,
 		"network":              lf.config.Network,
+		"simplified_factory":   true, // Указываем что это упрощенная версия
 	}
 }

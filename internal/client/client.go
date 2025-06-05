@@ -61,7 +61,7 @@ func NewClient(config ClientConfig, logger *logrus.Logger) *Client {
 		client:       rpcClient,
 		wsClient:     wsClient,
 		logger:       logger,
-		blockhashTTL: 30 * time.Second, // Blockhash is valid for ~60-90 seconds, cache for 30
+		blockhashTTL: 10 * time.Second, // Blockhash is valid for ~60-90 seconds, cache for 30
 	}
 
 	// Start blockhash updater in background
@@ -78,7 +78,7 @@ func (c *Client) GetLatestBlockhash(ctx context.Context) (solana.Hash, error) {
 	}
 
 	// Fetch new blockhash
-	result, err := c.client.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
+	result, err := c.client.GetLatestBlockhash(ctx, rpc.CommitmentProcessed)
 	if err != nil {
 		return solana.Hash{}, fmt.Errorf("getLatestBlockhash failed: %w", err)
 	}
@@ -115,13 +115,13 @@ func (c *Client) cacheBlockhash(blockhash solana.Hash) {
 
 // blockhashUpdater periodically updates the cached blockhash
 func (c *Client) blockhashUpdater() {
-	ticker := time.NewTicker(15 * time.Second) // Update every 15 seconds
+	ticker := time.NewTicker(5 * time.Second) // Update every 5 seconds
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 
 			result, err := c.client.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
 			if err == nil {
