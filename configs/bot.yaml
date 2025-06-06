@@ -69,7 +69,7 @@ ultra_fast:
   fire_and_forget: ${PUMPBOT_ULTRA_FAST_FIRE_AND_FORGET:-false}
 
   # Parallel processing for maximum speed
-  parallel_workers: ${PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS:-3}
+  parallel_workers: ${PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS:-1}
   token_queue_size: ${PUMPBOT_ULTRA_FAST_TOKEN_QUEUE_SIZE:-100}
 
   # Performance optimizations
