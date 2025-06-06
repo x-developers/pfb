@@ -3,7 +3,6 @@ package pumpfun
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"time"
 
@@ -144,7 +143,7 @@ func (b *Buyer) executeBuyTransaction(ctx context.Context, request BuyRequest) (
 	// Create transaction
 	transaction, err := b.CreateBuyTransaction(ctx, request)
 
-	fmt.Printf(transaction.String())
+	//fmt.Printf(transaction.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transaction: %w", err)
 	}
@@ -179,40 +178,7 @@ func (b *Buyer) createAssociatedAccountInstruction(mint solana.PublicKey) solana
 
 // createBuyInstruction creates the pump.fun buy instruction
 func (b *Buyer) createBuyInstruction(request BuyRequest, userATA solana.PublicKey) solana.Instruction {
-	// Get pump.fun program constants
-	pumpFunProgram := solana.MustPublicKeyFromBase58("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
-	pumpFunGlobal := solana.MustPublicKeyFromBase58("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf")
-	pumpFunFeeRecipient := solana.MustPublicKeyFromBase58("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
-	pumpFunEventAuthority := solana.MustPublicKeyFromBase58("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
-
-	// Create accounts array
-	accounts := []*solana.AccountMeta{
-		{PublicKey: pumpFunGlobal, IsWritable: false, IsSigner: false},
-		{PublicKey: pumpFunFeeRecipient, IsWritable: true, IsSigner: false},
-		{PublicKey: request.TokenEvent.Mint, IsWritable: false, IsSigner: false},
-		{PublicKey: request.TokenEvent.BondingCurve, IsWritable: true, IsSigner: false},
-		{PublicKey: request.TokenEvent.AssociatedBondingCurve, IsWritable: true, IsSigner: false},
-		{PublicKey: userATA, IsWritable: true, IsSigner: false},
-		{PublicKey: b.wallet.GetPublicKey(), IsWritable: true, IsSigner: true},
-		{PublicKey: solana.SystemProgramID, IsWritable: false, IsSigner: false},
-		{PublicKey: solana.TokenProgramID, IsWritable: false, IsSigner: false},
-		{PublicKey: request.TokenEvent.CreatorVault, IsWritable: true, IsSigner: false},
-		{PublicKey: pumpFunEventAuthority, IsWritable: false, IsSigner: false},
-		{PublicKey: pumpFunProgram, IsWritable: false, IsSigner: false},
-	}
-
-	// Create instruction data
-	data := b.createBuyInstructionData(request)
-
-	return solana.NewInstruction(
-		pumpFunProgram,
-		accounts,
-		data,
-	)
-}
-
-// createBuyInstructionData creates the buy instruction data
-func (b *Buyer) createBuyInstructionData(request BuyRequest) []byte {
+	// Calculate amounts
 	var tokenAmount uint64
 	var maxSolCost uint64
 
@@ -239,15 +205,14 @@ func (b *Buyer) createBuyInstructionData(request BuyRequest) []byte {
 		maxSolCost = config.ConvertSOLToLamports(request.AmountSOL * slippageFactor)
 	}
 
-	// Buy instruction discriminator for pump.fun
-	discriminator := uint64(16927863322537952870)
-
-	data := make([]byte, 24)
-	binary.LittleEndian.PutUint64(data[0:8], discriminator)
-	binary.LittleEndian.PutUint64(data[8:16], tokenAmount)
-	binary.LittleEndian.PutUint64(data[16:24], maxSolCost)
-
-	return data
+	// Use the shared pump.fun instruction creation function
+	return CreatePumpFunBuyInstruction(
+		request.TokenEvent,
+		userATA,
+		b.wallet.GetPublicKey(),
+		tokenAmount,
+		maxSolCost,
+	)
 }
 
 // createErrorResult creates an error result
@@ -315,10 +280,11 @@ func (b *Buyer) CreateBuyTransaction(ctx context.Context, request BuyRequest) (*
 	}
 
 	ataInstruction := b.createAssociatedAccountInstruction(request.TokenEvent.Mint)
-	b.logger.LogInstruction(ataInstruction)
+	//b.logger.LogInstruction(ataInstruction)
 	// Create buy instruction
 	buyInstruction := b.createBuyInstruction(request, ataAddress)
-	b.logger.LogInstruction(buyInstruction)
+
+	//b.logger.LogInstruction(buyInstruction)
 
 	// Get recent blockhash
 	blockhash, err := b.rpcClient.GetLatestBlockhash(ctx)

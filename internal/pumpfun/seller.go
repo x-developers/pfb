@@ -2,7 +2,6 @@ package pumpfun
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"time"
 
@@ -306,49 +305,14 @@ func (s *Seller) createSellInstruction(
 	slippageFactor := 1.0 - float64(s.config.Trading.SlippageBP)/10000.0
 	minSolOutput := uint64(estimatedSOL * slippageFactor * config.LamportsPerSol)
 
-	// Get pump.fun program constants
-	pumpFunProgram := solana.MustPublicKeyFromBase58("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
-	pumpFunGlobal := solana.MustPublicKeyFromBase58("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf")
-	pumpFunFeeRecipient := solana.MustPublicKeyFromBase58("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM")
-	pumpFunEventAuthority := solana.MustPublicKeyFromBase58("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1")
-
-	accounts := []*solana.AccountMeta{
-		{PublicKey: pumpFunGlobal, IsWritable: false, IsSigner: false},
-		{PublicKey: pumpFunFeeRecipient, IsWritable: true, IsSigner: false},
-		{PublicKey: tokenEvent.Mint, IsWritable: false, IsSigner: false},
-		{PublicKey: tokenEvent.BondingCurve, IsWritable: true, IsSigner: false},
-		{PublicKey: tokenEvent.AssociatedBondingCurve, IsWritable: true, IsSigner: false},
-		{PublicKey: ataAddress, IsWritable: true, IsSigner: false},
-		{PublicKey: s.wallet.GetPublicKey(), IsWritable: true, IsSigner: true},
-		{PublicKey: solana.SystemProgramID, IsWritable: false, IsSigner: false},
-		{PublicKey: solana.TokenProgramID, IsWritable: false, IsSigner: false},
-		{PublicKey: tokenEvent.CreatorVault, IsWritable: true, IsSigner: false},
-
-		{PublicKey: pumpFunEventAuthority, IsWritable: false, IsSigner: false},
-		{PublicKey: pumpFunProgram, IsWritable: false, IsSigner: false},
-	}
-
-	// Create instruction data
-	data := s.createSellInstructionData(sellAmount, minSolOutput)
-
-	return solana.NewInstruction(
-		pumpFunProgram,
-		accounts,
-		data,
+	// Use the shared pump.fun instruction creation function
+	return CreatePumpFunSellInstruction(
+		tokenEvent,
+		ataAddress,
+		s.wallet.GetPublicKey(),
+		sellAmount,
+		minSolOutput,
 	)
-}
-
-// createSellInstructionData creates the sell instruction data
-func (s *Seller) createSellInstructionData(sellAmount uint64, minSolOutput uint64) []byte {
-	// Sell instruction discriminator for pump.fun
-	discriminator := uint64(12502976635542562355) // sell discriminator from decoder.go
-
-	data := make([]byte, 24)
-	binary.LittleEndian.PutUint64(data[0:8], discriminator)
-	binary.LittleEndian.PutUint64(data[8:16], sellAmount)
-	binary.LittleEndian.PutUint64(data[16:24], minSolOutput)
-
-	return data
 }
 
 // closeATA closes the Associated Token Account and reclaims rent
