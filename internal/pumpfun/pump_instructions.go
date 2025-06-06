@@ -92,7 +92,20 @@ func CreatePumpFunSellInstruction(
 	minSolOutput uint64,
 ) solana.Instruction {
 	constants := GetPumpFunConstants()
-	accounts := CreatePumpFunAccountMetas(tokenEvent, userATA, userWallet)
+	accounts := []*solana.AccountMeta{
+		{PublicKey: constants.Global, IsWritable: false, IsSigner: false},                 // 0: global
+		{PublicKey: constants.FeeRecipient, IsWritable: true, IsSigner: false},            // 1: feeRecipient
+		{PublicKey: tokenEvent.Mint, IsWritable: false, IsSigner: false},                  // 2: mint
+		{PublicKey: tokenEvent.BondingCurve, IsWritable: true, IsSigner: false},           // 3: bondingCurve
+		{PublicKey: tokenEvent.AssociatedBondingCurve, IsWritable: true, IsSigner: false}, // 4: associatedBondingCurve
+		{PublicKey: userATA, IsWritable: true, IsSigner: false},                           // 5: associatedUser
+		{PublicKey: userWallet, IsWritable: true, IsSigner: true},                         // 6: user
+		{PublicKey: solana.SystemProgramID, IsWritable: false, IsSigner: false},           // 7: systemProgram
+		{PublicKey: tokenEvent.CreatorVault, IsWritable: true, IsSigner: false},           // 9: rent/creatorVault
+		{PublicKey: solana.TokenProgramID, IsWritable: false, IsSigner: false},            // 8: tokenProgram
+		{PublicKey: constants.EventAuthority, IsWritable: false, IsSigner: false},         // 10: eventAuthority
+		{PublicKey: constants.ProgramID, IsWritable: false, IsSigner: false},              // 11: program
+	}
 	data := createSellInstructionData(tokenAmount, minSolOutput)
 
 	return solana.NewInstruction(

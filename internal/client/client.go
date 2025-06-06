@@ -243,6 +243,21 @@ func (c *Client) GetBalance(ctx context.Context, address string, commitment rpc.
 	return result, nil
 }
 
+func (c *Client) GetAccountInfo(ctx context.Context, address string) (*rpc.GetAccountInfoResult, error) {
+
+	pubkey, err := solana.PublicKeyFromBase58(address)
+	if err != nil {
+		return nil, fmt.Errorf("invalid address: %w", err)
+	}
+
+	result, err := c.client.GetAccountInfo(ctx, pubkey)
+	if err != nil {
+		return nil, fmt.Errorf("getBalance failed: %w", err)
+	}
+
+	return result, nil
+}
+
 func (c *Client) GetTokenAccounts(ctx context.Context, address string) (*rpc.GetTokenAccountsResult, error) {
 	pubkey, _ := solana.PublicKeyFromBase58(address)
 	return c.client.GetTokenAccountsByOwner(

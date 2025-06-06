@@ -432,7 +432,9 @@ func (a *App) Start() error {
 		if err != nil {
 			return fmt.Errorf("failed to get balance: %w", err)
 		}
-		a.logger.Info(fmt.Sprintf("💰 Balance: %v SOL", balance))
+		a.logger.WithFields(map[string]interface{}{
+			"wallet": a.wallet.GetPublicKey(),
+		}).Info(fmt.Sprintf("💰 Balance: %v SOL", balance))
 	}
 
 	// Log trading configuration

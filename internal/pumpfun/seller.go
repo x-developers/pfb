@@ -14,14 +14,15 @@ import (
 	"github.com/gagliardetto/solana-go/programs/token"
 )
 
-// Seller handles automatic selling of tokens after purchase
+// Seller handles automatic selling of tokens after purchase with curve management
 type Seller struct {
-	wallet      *wallet.Wallet
-	rpcClient   *client.Client
-	logger      *logger.Logger
-	tradeLogger *logger.TradeLogger
-	config      *config.Config
-	enabled     bool
+	wallet       *wallet.Wallet
+	rpcClient    *client.Client
+	logger       *logger.Logger
+	tradeLogger  *logger.TradeLogger
+	config       *config.Config
+	curveManager *CurveManager // NEW: Curve manager integration
+	enabled      bool
 
 	// Statistics
 	totalSells      int64
@@ -29,24 +30,43 @@ type Seller struct {
 	totalReceived   float64
 	fastestSell     time.Duration
 	averageSellTime time.Duration
+
+	// Curve-related stats
+	totalPriceImpact   float64
+	averagePriceImpact float64
+	highImpactSells    int64
+	slippageViolations int64
 }
 
-// SellRequest represents a request to sell tokens
+// SellRequest represents a request to sell tokens with curve awareness
 type SellRequest struct {
 	TokenEvent     *TokenEvent
 	PurchaseResult *BuyResult
 	DelayMs        int64
 	SellPercentage float64
 	CloseATA       bool
+
+	// NEW: Curve-specific parameters
+	MaxSlippagePercent float64 // Maximum acceptable slippage
+	MaxPriceImpact     float64 // Maximum acceptable price impact
+	UseOptimalSizing   bool    // Use curve manager for optimal sizing
+	ValidateBeforeSell bool    // Validate transaction before execution
 }
 
-// SellResult represents the result of a sell operation
+// SellResult represents the result of a sell operation with curve data
 type SellResult struct {
 	SellResult  *TradeResult
 	CloseResult *ATACloseResult
 	TotalTime   time.Duration
 	Success     bool
 	Error       string
+
+	// NEW: Curve-related results
+	CurveCalculation *CurveCalculationResult
+	MarketStats      map[string]interface{}
+	PriceImpact      float64
+	SlippageActual   float64
+	OptimalAmount    uint64
 }
 
 // ATACloseResult represents the result of closing an ATA
@@ -57,7 +77,7 @@ type ATACloseResult struct {
 	Error             string
 }
 
-// NewSeller creates a new seller instance
+// NewSeller creates a new seller instance with curve manager
 func NewSeller(
 	wallet *wallet.Wallet,
 	rpcClient *client.Client,
@@ -66,37 +86,56 @@ func NewSeller(
 	config *config.Config,
 ) *Seller {
 	return &Seller{
-		wallet:      wallet,
-		rpcClient:   rpcClient,
-		logger:      logger,
-		tradeLogger: tradeLogger,
-		config:      config,
-		enabled:     config.Trading.AutoSell,
-		fastestSell: time.Hour,
+		wallet:       wallet,
+		rpcClient:    rpcClient,
+		logger:       logger,
+		tradeLogger:  tradeLogger,
+		config:       config,
+		curveManager: NewCurveManager(rpcClient, logger), // Initialize curve manager
+		enabled:      config.Trading.AutoSell,
+		fastestSell:  time.Hour,
 	}
 }
 
-// ScheduleSell schedules an automatic sell operation
+// ScheduleSell schedules an automatic sell operation with curve analysis
 func (s *Seller) ScheduleSell(request SellRequest) {
 	if !s.enabled {
 		s.logger.Debug("Auto-sell is disabled, skipping")
 		return
 	}
 
+	// Set default curve parameters if not specified
+	if request.MaxSlippagePercent == 0 {
+		request.MaxSlippagePercent = float64(s.config.Trading.SlippageBP) / 100.0
+	}
+	if request.MaxPriceImpact == 0 {
+		request.MaxPriceImpact = 5.0 // Default 5% max price impact
+	}
+	if !request.UseOptimalSizing {
+		request.UseOptimalSizing = true // Enable by default
+	}
+	if !request.ValidateBeforeSell {
+		request.ValidateBeforeSell = true // Enable by default
+	}
+
 	// Start sell operation in goroutine to not block main thread
 	go s.executeSell(request)
 }
 
-// executeSell executes the sell operation with millisecond timing
+// executeSell executes the sell operation with curve analysis and millisecond timing
 func (s *Seller) executeSell(request SellRequest) {
 	startTime := time.Now()
 
 	s.logger.WithFields(map[string]interface{}{
-		"mint":            request.TokenEvent.Mint.String(),
-		"delay_ms":        request.DelayMs,
-		"sell_percentage": request.SellPercentage,
-		"close_ata":       request.CloseATA,
-	}).Info("🕒 Scheduling sell operation")
+		"mint":                 request.TokenEvent.Mint.String(),
+		"delay_ms":             request.DelayMs,
+		"sell_percentage":      request.SellPercentage,
+		"close_ata":            request.CloseATA,
+		"max_slippage":         request.MaxSlippagePercent,
+		"max_price_impact":     request.MaxPriceImpact,
+		"use_optimal_sizing":   request.UseOptimalSizing,
+		"validate_before_sell": request.ValidateBeforeSell,
+	}).Info("🕒 Scheduling curve-aware sell operation")
 
 	// Apply delay if specified
 	if request.DelayMs > 0 {
@@ -108,8 +147,8 @@ func (s *Seller) executeSell(request SellRequest) {
 		time.Sleep(delayDuration)
 	}
 
-	// Execute the sell operation
-	result := s.performSell(request, startTime)
+	// Execute the sell operation with curve analysis
+	result := s.performCurveAwareSell(request, startTime)
 
 	// Log the result
 	s.logSellResult(request, result)
@@ -120,29 +159,87 @@ func (s *Seller) executeSell(request SellRequest) {
 	}
 }
 
-// performSell performs the actual sell operation
-func (s *Seller) performSell(request SellRequest, startTime time.Time) *SellResult {
+// performCurveAwareSell performs the actual sell operation with curve analysis
+func (s *Seller) performCurveAwareSell(request SellRequest, startTime time.Time) *SellResult {
 	ctx := context.Background()
 
 	result := &SellResult{
 		Success: false,
 	}
 
-	// Calculate fixed sell amount based on configuration
-	var sellAmount uint64
-	if s.config.IsTokenBasedTrading() {
-		// Use the same fixed amount that was purchased
-		sellAmount = s.config.Trading.BuyAmountTokens
+	// Step 1: Get current market stats
+	s.logger.Info("📊 Analyzing bonding curve state...")
+	marketStats, err := s.curveManager.GetMarketStats(ctx, request.TokenEvent.BondingCurve)
+	if err != nil {
+		result.Error = fmt.Sprintf("failed to get market stats: %v", err)
+		result.TotalTime = time.Since(startTime)
+		return result
+	}
+	result.MarketStats = marketStats
 
-		// Apply sell percentage if less than 100%
-		if request.SellPercentage < 100.0 {
-			sellAmount = uint64(float64(sellAmount) * (request.SellPercentage / 100.0))
+	s.logger.WithFields(marketStats).Info("📈 Current market statistics")
+
+	// Step 2: Calculate current token balance (estimated)
+	var tokenBalance uint64
+	if s.config.IsTokenBasedTrading() {
+		tokenBalance = s.config.Trading.BuyAmountTokens
+	} else {
+		// Estimate token balance from SOL amount
+		tokenBalance = uint64(s.config.Trading.BuyAmountSOL * 100000) // Rough conversion
+	}
+
+	// Step 3: Determine optimal sell amount
+	var sellAmount uint64
+	if request.UseOptimalSizing {
+		s.logger.Info("🎯 Calculating optimal sell amount using curve analysis...")
+		optimalAmount, curveCalc, err := s.curveManager.EstimateOptimalSellAmount(
+			ctx,
+			request.TokenEvent.BondingCurve,
+			tokenBalance,
+			request.SellPercentage,
+		)
+		if err != nil {
+			result.Error = fmt.Sprintf("failed to calculate optimal sell amount: %v", err)
+			result.TotalTime = time.Since(startTime)
+			return result
+		}
+
+		sellAmount = optimalAmount
+		result.CurveCalculation = curveCalc
+		result.OptimalAmount = optimalAmount
+		result.PriceImpact = curveCalc.PriceImpact
+
+		s.logger.WithFields(map[string]interface{}{
+			"token_balance":   tokenBalance,
+			"sell_percentage": request.SellPercentage,
+			"optimal_amount":  optimalAmount,
+			"estimated_sol":   curveCalc.AmountOut,
+			"price_impact":    curveCalc.PriceImpact,
+			"fee":             curveCalc.Fee,
+		}).Info("💡 Optimal sell amount calculated")
+
+		// Check if price impact is acceptable
+		if curveCalc.PriceImpact > request.MaxPriceImpact {
+			s.highImpactSells++
+			s.logger.WithFields(map[string]interface{}{
+				"price_impact": curveCalc.PriceImpact,
+				"max_allowed":  request.MaxPriceImpact,
+			}).Warn("⚠️ High price impact detected, proceeding with caution")
 		}
 	} else {
-		// For SOL-based trading, estimate token amount from SOL amount
-		// This is a rough estimation - in practice you'd query the actual balance
-		estimatedTokens := uint64(s.config.Trading.BuyAmountSOL * 100000) // Rough conversion
-		sellAmount = uint64(float64(estimatedTokens) * (request.SellPercentage / 100.0))
+		// Use fixed sell amount based on configuration
+		if s.config.IsTokenBasedTrading() {
+			sellAmount = uint64(float64(s.config.Trading.BuyAmountTokens) * (request.SellPercentage / 100.0))
+		} else {
+			estimatedTokens := uint64(s.config.Trading.BuyAmountSOL * 100000)
+			sellAmount = uint64(float64(estimatedTokens) * (request.SellPercentage / 100.0))
+		}
+
+		s.logger.WithFields(map[string]interface{}{
+			"sell_amount":     sellAmount,
+			"sell_percentage": request.SellPercentage,
+			"token_based":     s.config.IsTokenBasedTrading(),
+		}).Info("💰 Using fixed sell amount")
 	}
 
 	if sellAmount == 0 {
@@ -151,14 +248,34 @@ func (s *Seller) performSell(request SellRequest, startTime time.Time) *SellResu
 		return result
 	}
 
-	s.logger.WithFields(map[string]interface{}{
-		"sell_amount":     sellAmount,
-		"sell_percentage": request.SellPercentage,
-		"token_based":     s.config.IsTokenBasedTrading(),
-	}).Info("💰 Using fixed sell amount")
+	// Step 4: Validate transaction before execution
+	if request.ValidateBeforeSell {
+		s.logger.Info("✅ Validating sell transaction...")
+		minSolOutput := uint64(0)
+		if result.CurveCalculation != nil {
+			// Use calculated amount minus slippage tolerance
+			slippageFactor := 1.0 - (request.MaxSlippagePercent / 100.0)
+			minSolOutput = uint64(float64(result.CurveCalculation.AmountOut) * slippageFactor)
+		}
 
-	// Execute sell transaction
+		err = s.curveManager.ValidateSellTransaction(
+			ctx,
+			request.TokenEvent.BondingCurve,
+			sellAmount,
+			minSolOutput,
+			s.config.Trading.SlippageBP,
+		)
+		if err != nil {
+			s.slippageViolations++
+			result.Error = fmt.Sprintf("sell validation failed: %v", err)
+			result.TotalTime = time.Since(startTime)
+			return result
+		}
 
+		s.logger.Info("✅ Sell transaction validation passed")
+	}
+
+	// Step 5: Execute sell transaction
 	sellResult, err := s.executeSellTransaction(ctx, request.TokenEvent, sellAmount)
 	if err != nil {
 		result.Error = fmt.Sprintf("sell transaction failed: %v", err)
@@ -169,7 +286,12 @@ func (s *Seller) performSell(request SellRequest, startTime time.Time) *SellResu
 	result.SellResult = sellResult
 	result.Success = sellResult != nil && sellResult.Success
 
-	// Close ATA if requested and selling 100%
+	// Step 6: Update curve-related statistics
+	if result.CurveCalculation != nil {
+		s.updateCurveStatistics(result.CurveCalculation.PriceImpact)
+	}
+
+	// Step 7: Close ATA if requested and selling 100%
 	if result.Success && request.SellPercentage >= 100.0 {
 		s.logger.Info("🗑️ Closing ATA account...")
 		ataAddress, err := s.wallet.GetAssociatedTokenAddress(request.TokenEvent.Mint)
@@ -183,10 +305,23 @@ func (s *Seller) performSell(request SellRequest, startTime time.Time) *SellResu
 
 	result.TotalTime = time.Since(startTime)
 
+	// Step 8: Log final curve analysis
+	if result.Success && result.CurveCalculation != nil {
+		s.logger.WithFields(map[string]interface{}{
+			"signature":       sellResult.Signature,
+			"tokens_sold":     sellAmount,
+			"sol_received":    sellResult.AmountSOL,
+			"price_impact":    result.CurveCalculation.PriceImpact,
+			"fee_paid":        result.CurveCalculation.Fee,
+			"effective_price": result.CurveCalculation.PricePerToken,
+			"total_time_ms":   result.TotalTime.Milliseconds(),
+		}).Info("🎯 Curve-aware sell completed successfully")
+	}
+
 	return result
 }
 
-// executeSellTransaction executes the sell transaction (similar to executeBuyTransaction)
+// executeSellTransaction executes the sell transaction (enhanced with curve data)
 func (s *Seller) executeSellTransaction(
 	ctx context.Context,
 	tokenEvent *TokenEvent,
@@ -199,12 +334,16 @@ func (s *Seller) executeSellTransaction(
 		"sell_amount": sellAmount,
 		"name":        tokenEvent.Name,
 		"symbol":      tokenEvent.Symbol,
-	}).Info("🛒 Executing token sale")
+	}).Info("🛒 Executing curve-optimized token sale")
+
+	// Get expected SOL amount from curve
+	curveResult, err := s.curveManager.CalculateSellReturn(ctx, tokenEvent.BondingCurve, sellAmount)
+	if err != nil {
+		s.logger.WithError(err).Warn("Failed to get curve calculation, using estimate")
+	}
 
 	// Create and send sell transaction
 	transaction, err := s.CreateSellTransaction(ctx, tokenEvent, sellAmount)
-	fmt.Println(transaction.String())
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to create sell transaction: %w", err)
 	}
@@ -215,13 +354,25 @@ func (s *Seller) executeSellTransaction(
 		return nil, fmt.Errorf("failed to send sell transaction: %w", err)
 	}
 
-	// Calculate estimated SOL received (simplified calculation)
-	estimatedSOL := s.estimateSOLReceived(sellAmount)
+	// Use curve calculation if available, otherwise estimate
+	var estimatedSOL float64
+	var price float64
 
-	// Calculate price
-	price := 0.0
-	if sellAmount > 0 {
-		price = estimatedSOL / float64(sellAmount)
+	if curveResult != nil && curveResult.AmountOut > 0 {
+		estimatedSOL = config.ConvertLamportsToSOL(curveResult.AmountOut)
+		price = curveResult.PricePerToken / config.LamportsPerSol
+
+		s.logger.WithFields(map[string]interface{}{
+			"curve_sol_amount": estimatedSOL,
+			"curve_fee":        config.ConvertLamportsToSOL(curveResult.Fee),
+			"price_impact":     curveResult.PriceImpact,
+		}).Info("📊 Using curve calculation for sell result")
+	} else {
+		// Fallback to estimation
+		estimatedSOL = s.estimateSOLReceived(sellAmount)
+		if sellAmount > 0 {
+			price = estimatedSOL / float64(sellAmount)
+		}
 	}
 
 	sellTime := time.Since(startTime)
@@ -230,12 +381,13 @@ func (s *Seller) executeSellTransaction(
 	s.updateStatistics(sellTime, estimatedSOL, true)
 
 	s.logger.WithFields(map[string]interface{}{
-		"signature":     signature.String(),
-		"sell_time_ms":  sellTime.Milliseconds(),
-		"sell_amount":   sellAmount,
-		"estimated_sol": estimatedSOL,
-		"price":         price,
-	}).Info("✅ Token sale successful")
+		"signature":      signature.String(),
+		"sell_time_ms":   sellTime.Milliseconds(),
+		"sell_amount":    sellAmount,
+		"estimated_sol":  estimatedSOL,
+		"price":          price,
+		"curve_enhanced": curveResult != nil,
+	}).Info("✅ Curve-enhanced token sale successful")
 
 	return &TradeResult{
 		Success:      true,
@@ -247,7 +399,7 @@ func (s *Seller) executeSellTransaction(
 	}, nil
 }
 
-// CreateSellTransaction creates a sell transaction without executing it
+// CreateSellTransaction creates a sell transaction without executing it (enhanced with curve validation)
 func (s *Seller) CreateSellTransaction(ctx context.Context, tokenEvent *TokenEvent, sellAmount uint64) (*solana.Transaction, error) {
 	// Get ATA address for the token
 	ataAddress, err := s.wallet.GetAssociatedTokenAddress(tokenEvent.Mint)
@@ -255,9 +407,31 @@ func (s *Seller) CreateSellTransaction(ctx context.Context, tokenEvent *TokenEve
 		return nil, fmt.Errorf("failed to get ATA address: %w", err)
 	}
 
-	// Create sell instruction
-	sellInstruction := s.createSellInstruction(tokenEvent, sellAmount, ataAddress)
-	s.logger.LogInstruction(sellInstruction)
+	// Calculate minimum SOL output using curve manager
+	var minSolOutput uint64
+	curveResult, err := s.curveManager.CalculateSellReturn(ctx, tokenEvent.BondingCurve, sellAmount)
+	if err != nil {
+		s.logger.WithError(err).Warn("Failed to get curve calculation, using fallback")
+		// Fallback calculation
+		estimatedSOL := s.estimateSOLReceived(sellAmount)
+		slippageFactor := 1.0 - float64(s.config.Trading.SlippageBP)/10000.0
+		minSolOutput = config.ConvertSOLToLamports(estimatedSOL * slippageFactor)
+	} else {
+		// Apply slippage to curve calculation
+		slippageFactor := 1.0 - float64(s.config.Trading.SlippageBP)/10000.0
+		minSolOutput = uint64(float64(curveResult.AmountOut) * slippageFactor)
+
+		s.logger.WithFields(map[string]interface{}{
+			"curve_amount_out": curveResult.AmountOut,
+			"slippage_bp":      s.config.Trading.SlippageBP,
+			"min_sol_output":   minSolOutput,
+			"price_impact":     curveResult.PriceImpact,
+		}).Debug("Using curve-calculated minimum SOL output")
+	}
+
+	// Create sell instruction with curve-optimized parameters
+	sellInstruction := s.createSellInstruction(tokenEvent, sellAmount, ataAddress, minSolOutput)
+
 	// Get recent blockhash
 	blockhash, err := s.rpcClient.GetLatestBlockhash(ctx)
 	if err != nil {
@@ -289,22 +463,16 @@ func (s *Seller) CreateSellTransaction(ctx context.Context, tokenEvent *TokenEve
 		return transaction, fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
-	fmt.Printf(transaction.String())
-
 	return transaction, nil
 }
 
-// createSellInstruction creates a pump.fun sell instruction
+// createSellInstruction creates a pump.fun sell instruction with curve-optimized parameters
 func (s *Seller) createSellInstruction(
 	tokenEvent *TokenEvent,
 	sellAmount uint64,
 	ataAddress solana.PublicKey,
+	minSolOutput uint64,
 ) solana.Instruction {
-	// Calculate minimum SOL output with slippage
-	estimatedSOL := s.estimateSOLReceived(sellAmount)
-	slippageFactor := 1.0 - float64(s.config.Trading.SlippageBP)/10000.0
-	minSolOutput := uint64(estimatedSOL * slippageFactor * config.LamportsPerSol)
-
 	// Use the shared pump.fun instruction creation function
 	return CreatePumpFunSellInstruction(
 		tokenEvent,
@@ -388,7 +556,7 @@ func (s *Seller) closeATA(ctx context.Context, ataAddress solana.PublicKey) *ATA
 	return result
 }
 
-// estimateSOLReceived estimates SOL received for selling tokens
+// estimateSOLReceived estimates SOL received for selling tokens (fallback method)
 func (s *Seller) estimateSOLReceived(tokenAmount uint64) float64 {
 	// Simplified estimation - in production you'd query the bonding curve
 	basePrice := 0.00001 // Very rough estimate
@@ -417,19 +585,44 @@ func (s *Seller) updateStatistics(sellTime time.Duration, amountSOL float64, suc
 	}
 }
 
-// logSellResult logs the sell operation result
+// updateCurveStatistics updates curve-related statistics
+func (s *Seller) updateCurveStatistics(priceImpact float64) {
+	s.totalPriceImpact += priceImpact
+
+	// Update average price impact
+	if s.totalSells == 1 {
+		s.averagePriceImpact = priceImpact
+	} else {
+		alpha := 0.1
+		s.averagePriceImpact = s.averagePriceImpact*(1-alpha) + priceImpact*alpha
+	}
+
+	// Track high impact sells (> 5%)
+	if priceImpact > 5.0 {
+		s.highImpactSells++
+	}
+}
+
+// logSellResult logs the sell operation result with curve data
 func (s *Seller) logSellResult(request SellRequest, result *SellResult) {
 	fields := map[string]interface{}{
-		"mint":       request.TokenEvent.Mint.String(),
-		"success":    result.Success,
-		"total_time": result.TotalTime.Milliseconds(),
-		"auto_sell":  true,
+		"mint":           request.TokenEvent.Mint.String(),
+		"success":        result.Success,
+		"total_time":     result.TotalTime.Milliseconds(),
+		"auto_sell":      true,
+		"curve_enhanced": result.CurveCalculation != nil,
 	}
 
 	if result.SellResult != nil {
 		fields["sell_signature"] = result.SellResult.Signature
 		fields["sell_amount_tokens"] = result.SellResult.AmountTokens
 		fields["sell_amount_sol"] = result.SellResult.AmountSOL
+	}
+
+	if result.CurveCalculation != nil {
+		fields["price_impact"] = result.CurveCalculation.PriceImpact
+		fields["curve_fee"] = result.CurveCalculation.Fee
+		fields["optimal_amount"] = result.OptimalAmount
 	}
 
 	if result.CloseResult != nil {
@@ -440,13 +633,13 @@ func (s *Seller) logSellResult(request SellRequest, result *SellResult) {
 
 	if result.Error != "" {
 		fields["error"] = result.Error
-		s.logger.WithFields(fields).Error("❌ Sell failed")
+		s.logger.WithFields(fields).Error("❌ Curve-aware sell failed")
 	} else {
-		s.logger.WithFields(fields).Info("✅ Sell completed successfully")
+		s.logger.WithFields(fields).Info("✅ Curve-aware sell completed successfully")
 	}
 }
 
-// logToTradeLogger logs to the trade logger
+// logToTradeLogger logs to the trade logger with curve data
 func (s *Seller) logToTradeLogger(request SellRequest, result *SellResult) {
 	if result.SellResult == nil || s.tradeLogger == nil {
 		return
@@ -465,6 +658,11 @@ func (s *Seller) logToTradeLogger(request SellRequest, result *SellResult) {
 		profitLoss = result.SellResult.AmountSOL - request.PurchaseResult.AmountSOL
 	}
 
+	strategy := "curve_aware_auto_sell"
+	if result.CurveCalculation != nil {
+		strategy = fmt.Sprintf("curve_aware_auto_sell_impact_%.2f", result.CurveCalculation.PriceImpact)
+	}
+
 	err := s.tradeLogger.LogSell(
 		request.TokenEvent.Mint.String(),
 		request.TokenEvent.Name,
@@ -477,7 +675,7 @@ func (s *Seller) logToTradeLogger(request SellRequest, result *SellResult) {
 		errorMsg,
 		5000, // Estimated gas fee
 		s.config.Trading.SlippageBP,
-		"auto_sell",
+		strategy,
 		profitLoss,
 	)
 
@@ -517,14 +715,14 @@ func (s *Seller) UpdateConfig(config *config.Config) {
 	}).Info("🔄 Seller configuration updated")
 }
 
-// GetStats returns seller statistics
+// GetStats returns seller statistics including curve data
 func (s *Seller) GetStats() map[string]interface{} {
 	successRate := float64(0)
 	if s.totalSells > 0 {
 		successRate = (float64(s.successfulSells) / float64(s.totalSells)) * 100
 	}
 
-	return map[string]interface{}{
+	stats := map[string]interface{}{
 		"enabled":          s.enabled,
 		"total_sells":      s.totalSells,
 		"successful_sells": s.successfulSells,
@@ -534,5 +732,29 @@ func (s *Seller) GetStats() map[string]interface{} {
 		"average_sell_ms":  s.averageSellTime.Milliseconds(),
 		"sell_delay_ms":    s.config.Trading.SellDelayMs,
 		"sell_percentage":  s.config.Trading.SellPercentage,
+
+		// NEW: Curve-related statistics
+		"curve_enhanced":       true,
+		"average_price_impact": s.averagePriceImpact,
+		"high_impact_sells":    s.highImpactSells,
+		"slippage_violations":  s.slippageViolations,
+		"total_price_impact":   s.totalPriceImpact,
 	}
+
+	return stats
+}
+
+// GetCurveManager returns the curve manager instance
+func (s *Seller) GetCurveManager() *CurveManager {
+	return s.curveManager
+}
+
+// SimulateSell simulates a sell operation without executing it
+func (s *Seller) SimulateSell(ctx context.Context, tokenEvent *TokenEvent, tokenBalance uint64, sellPercentage float64) (map[string]*CurveCalculationResult, error) {
+	return s.curveManager.SimulateSellImpact(ctx, tokenEvent.BondingCurve, tokenBalance)
+}
+
+// GetCurrentMarketData returns current market data for a token
+func (s *Seller) GetCurrentMarketData(ctx context.Context, tokenEvent *TokenEvent) (map[string]interface{}, error) {
+	return s.curveManager.GetMarketStats(ctx, tokenEvent.BondingCurve)
 }
