@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"github.com/gagliardetto/solana-go/programs/token"
 	confirm "github.com/gagliardetto/solana-go/rpc/sendAndConfirmTransaction"
 	"github.com/gagliardetto/solana-go/rpc/ws"
 	"sync"
@@ -240,6 +241,20 @@ func (c *Client) GetBalance(ctx context.Context, address string, commitment rpc.
 	}
 
 	return result, nil
+}
+
+func (c *Client) GetTokenAccounts(ctx context.Context, address string) (*rpc.GetTokenAccountsResult, error) {
+	pubkey, _ := solana.PublicKeyFromBase58(address)
+	return c.client.GetTokenAccountsByOwner(
+		ctx,
+		pubkey,
+		&rpc.GetTokenAccountsConfig{
+			ProgramId: &token.ProgramID,
+		},
+		&rpc.GetTokenAccountsOpts{
+			Commitment: rpc.CommitmentFinalized,
+		},
+	)
 }
 
 // GetSlot gets current slot
