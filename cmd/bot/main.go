@@ -270,7 +270,7 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 	// Initialize components
 	priceCalc := pumpfun.NewPriceCalculator(solanaClient)
 
-	// Initialize trader (simplified without Jito)
+	// Initialize trader (without Jito)
 	var trader *pumpfun.Trader
 	if !*dryRun && walletInstance != nil {
 		trader = pumpfun.NewTrader(walletInstance, solanaClient, log, cfg)
@@ -304,7 +304,7 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 	return app, nil
 }
 
-// Новая функция для мониторинга каналов
+// Monitor channels for debugging
 func (a *App) monitorChannels() {
 	for {
 		select {
@@ -316,20 +316,18 @@ func (a *App) monitorChannels() {
 	}
 }
 
-// Функция для логирования состояния каналов
 func (a *App) logChannelStatus() {
-	// Получаем канал от listener'а
+	// Get channel from listener
 	tokenChan := a.listener.GetTokenChannel()
 
-	// Проверяем состояние основного канала
+	// Check main channel status
 	var mainChannelLen, mainChannelCap int
 	if tokenChan != nil {
-		// Используем reflection для получения информации о канале
 		mainChannelLen = len(tokenChan)
 		mainChannelCap = cap(tokenChan)
 	}
 
-	// Проверяем воркер каналы
+	// Check worker channels
 	workerStats := make([]map[string]interface{}, len(a.tokenWorkers))
 	totalWorkerBuffered := 0
 
@@ -360,7 +358,7 @@ func (a *App) logChannelStatus() {
 		"worker_stats":             workerStats,
 	}).Info("📊 Channel Status Monitor")
 
-	// Предупреждения
+	// Warnings
 	if a.listenerTokensReceived > 0 && a.mainChannelTokensSent == 0 {
 		a.logger.Warn("⚠️ Listener receiving tokens but main channel not sending!")
 	}
@@ -504,12 +502,12 @@ func (a *App) Start() error {
 	}
 }
 
-// Исправленная функция initializeUltraFastWorkers
+// Initialize ultra-fast workers
 func (a *App) initializeUltraFastWorkers() {
 	workerCount := a.config.UltraFast.ParallelWorkers
 	bufferSize := a.config.UltraFast.TokenQueueSize
 
-	// Убедимся что buffer size не меньше количества воркеров
+	// Ensure buffer size is not less than worker count
 	if bufferSize < workerCount*2 {
 		bufferSize = workerCount * 2
 		a.logger.WithFields(map[string]interface{}{

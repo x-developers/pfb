@@ -11,14 +11,6 @@ const (
 	SolanaMainnetWS = "wss://api.mainnet-beta.solana.com"
 	SolanaDevnetWS  = "wss://api.devnet.solana.com"
 
-	// Jito RPC endpoints
-	JitoMainnetRPC = "https://mainnet.block-engine.jito.wtf/api/v1/transactions"
-	JitoDevnetRPC  = "https://devnet.block-engine.jito.wtf/api/v1/transactions"
-
-	// Jito bundle endpoints
-	JitoMainnetBundle = "https://mainnet.block-engine.jito.wtf/api/v1/bundles"
-	JitoDevnetBundle  = "https://devnet.block-engine.jito.wtf/api/v1/bundles"
-
 	// Solana constants
 	LamportsPerSol = 1_000_000_000
 
@@ -59,18 +51,6 @@ var (
 
 	// Compute Budget Program ID
 	ComputeBudgetProgramID = mustDecodeBase58("ComputeBudget111111111111111111111111111111")
-
-	// Jito tip accounts for mainnet
-	JitoTipAccounts = [][]byte{
-		mustDecodeBase58("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5"),
-		mustDecodeBase58("HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe"),
-		mustDecodeBase58("Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY"),
-		mustDecodeBase58("ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49"),
-		mustDecodeBase58("DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh"),
-		mustDecodeBase58("ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt"),
-		mustDecodeBase58("DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL"),
-		mustDecodeBase58("3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT"),
-	}
 )
 
 // Trading constants
@@ -123,30 +103,6 @@ func GetRPCEndpoint(network string) string {
 	}
 }
 
-// GetJitoRPCEndpoint returns Jito RPC endpoint based on network
-func GetJitoRPCEndpoint(network string) string {
-	switch network {
-	case "mainnet":
-		return JitoMainnetRPC
-	case "devnet":
-		return JitoDevnetRPC
-	default:
-		return JitoMainnetRPC
-	}
-}
-
-// GetJitoBundleEndpoint returns Jito bundle endpoint based on network
-func GetJitoBundleEndpoint(network string) string {
-	switch network {
-	case "mainnet":
-		return JitoMainnetBundle
-	case "devnet":
-		return JitoDevnetBundle
-	default:
-		return JitoMainnetBundle
-	}
-}
-
 // GetWSEndpoint returns WebSocket endpoint based on network
 func GetWSEndpoint(network string) string {
 	switch network {
@@ -157,15 +113,6 @@ func GetWSEndpoint(network string) string {
 	default:
 		return SolanaMainnetWS
 	}
-}
-
-// GetRandomJitoTipAccount returns a random Jito tip account for MEV protection
-func GetRandomJitoTipAccount() []byte {
-	if len(JitoTipAccounts) == 0 {
-		return nil
-	}
-	// Simple rotation - in production you might want to use crypto/rand
-	return JitoTipAccounts[0] // For now, use first account
 }
 
 // ConvertSOLToLamports converts SOL to lamports

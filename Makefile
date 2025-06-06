@@ -70,40 +70,6 @@ run-debug: build
 	@echo "Running $(BINARY_NAME) with debug logging..."
 	./$(BUILD_DIR)/$(BINARY_NAME) --log-level debug
 
-# 🛡️ Jito-related targets
-.PHONY: run-jito
-run-jito: build
-	@echo "Running $(BINARY_NAME) with Jito MEV protection..."
-	./$(BUILD_DIR)/$(BINARY_NAME) --jito
-
-# Run with Jito on devnet (testing)
-.PHONY: run-jito-devnet
-run-jito-devnet: build
-	@echo "Running $(BINARY_NAME) with Jito on devnet..."
-	./$(BUILD_DIR)/$(BINARY_NAME) --network devnet --jito --dry-run
-
-# Run with maximum speed + Jito
-.PHONY: run-max-speed
-run-max-speed: build
-	@echo "Running $(BINARY_NAME) with maximum speed + Jito protection..."
-	./$(BUILD_DIR)/$(BINARY_NAME) --skip-validation --jito --parallel-workers 5
-
-# Test Jito connectivity
-.PHONY: test-jito
-test-jito:
-	@echo "Testing Jito connectivity..."
-	@cd scripts && go run test_jito.go
-
-# Test different Jito endpoints
-.PHONY: test-jito-regions
-test-jito-regions:
-	@echo "Testing Jito regional endpoints..."
-	@cd scripts && go run test_jito.go global
-	@cd scripts && go run test_jito.go frankfurt
-	@cd scripts && go run test_jito.go amsterdam
-	@cd scripts && go run test_jito.go ny
-	@cd scripts && go run test_jito.go tokyo
-
 # Run tests
 .PHONY: test
 test:
@@ -237,14 +203,6 @@ test-devnet: build
 	@timeout 10 ./build/pump-fun-bot --network devnet --log-level info --dry-run || true
 	@echo "Devnet test completed"
 
-# 🛡️ Comprehensive Jito testing
-.PHONY: test-jito-comprehensive
-test-jito-comprehensive: test-jito test-jito-regions
-	@echo "Running comprehensive Jito tests..."
-	@echo "Testing Jito + Bot integration..."
-	@timeout 15 ./build/pump-fun-bot --network devnet --jito --dry-run --log-level debug || true
-	@echo "Jito comprehensive testing completed"
-
 # 🚀 Quick start commands for different modes
 .PHONY: quick-start
 quick-start:
@@ -252,13 +210,7 @@ quick-start:
 	@echo ""
 	@echo "📋 Basic Commands:"
 	@echo "make run-devnet              # Safe devnet testing"
-	@echo "make run-jito-devnet         # Test Jito on devnet"
 	@echo "make run-debug               # Debug mode"
-	@echo ""
-	@echo "🛡️ Jito Commands:"
-	@echo "make test-jito               # Test Jito connectivity"
-	@echo "make run-jito                # Run with Jito protection"
-	@echo "make run-max-speed           # Maximum speed + Jito"
 	@echo ""
 	@echo "⚡ Performance Commands:"
 	@echo "make run-hold                # Hold-only mode"
@@ -267,7 +219,6 @@ quick-start:
 	@echo "🔧 Development Commands:"
 	@echo "make test-all                # Run all tests"
 	@echo "make debug                   # Quick debugging"
-	@echo "make test-jito-comprehensive # Full Jito testing"
 
 # Help with ultra-fast specific examples
 .PHONY: help-ultra-fast
@@ -277,26 +228,21 @@ help-ultra-fast:
 	@echo "Basic ultra-fast usage:"
 	@echo "  make run-devnet                             # Safe testing on devnet"
 	@echo "  make run                                    # Live trading (ultra-fast)"
-	@echo "  make run-jito                               # Ultra-fast + MEV protection"
 	@echo ""
 	@echo "Advanced ultra-fast usage:"
 	@echo "  ./build/pump-fun-bot --parallel-workers 5          # 5 parallel workers"
-	@echo "  ./build/pump-fun-bot --skip-validation --jito      # Maximum speed + protection"
+	@echo "  ./build/pump-fun-bot --skip-validation             # Maximum speed"
 	@echo "  ./build/pump-fun-bot --benchmark --log-latency     # Performance testing"
-	@echo ""
-	@echo "Regional endpoint testing:"
-	@echo "  make test-jito-regions                      # Test all regional endpoints"
 	@echo ""
 	@echo "Environment variable examples:"
 	@echo "  PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS=5 make run"
-	@echo "  PUMPBOT_ULTRA_FAST_SKIP_VALIDATION=true make run-jito"
+	@echo "  PUMPBOT_ULTRA_FAST_SKIP_VALIDATION=true make run"
 	@echo ""
 	@echo "💡 Tips:"
 	@echo "  - Always test with --dry-run first"
 	@echo "  - Start with 3 parallel workers"
 	@echo "  - Use latency logging for optimization"
 	@echo "  - Monitor success rates vs speed"
-	@echo "  - Combine with Jito for MEV protection"
 
 # Help
 .PHONY: help
@@ -309,14 +255,6 @@ help:
 	@echo "  run          - Build and run in ultra-fast mode"
 	@echo "  run-devnet   - Run on devnet"
 	@echo "  run-debug    - Run with debug logging"
-	@echo ""
-	@echo "🛡️  Jito MEV Protection:"
-	@echo "  run-jito              - Run with Jito MEV protection"
-	@echo "  run-jito-devnet       - Test Jito on devnet"
-	@echo "  run-max-speed         - Maximum speed + Jito protection"
-	@echo "  test-jito             - Test Jito connectivity"
-	@echo "  test-jito-regions     - Test regional endpoints"
-	@echo "  help-ultra-fast       - Detailed ultra-fast help"
 	@echo ""
 	@echo "⚡ Trading Modes:"
 	@echo "  run-yolo     - Run in YOLO mode (continuous trading)"
@@ -355,29 +293,21 @@ examples:
 	@echo "make run-devnet"
 	@echo "# OR: ./build/pump-fun-bot --network devnet --dry-run"
 	@echo ""
-	@echo "🛡️ MEV Protected Trading:"
-	@echo "make run-jito"
-	@echo "# OR: ./build/pump-fun-bot --network mainnet --jito --jito-tip 15000"
+	@echo "⚡ Maximum Speed:"
+	@echo "make run --skip-validation --parallel-workers 5"
+	@echo "# OR: ./build/pump-fun-bot --skip-validation --parallel-workers 5"
 	@echo ""
-	@echo "⚡ Maximum Speed + MEV Protection:"
-	@echo "make run-max-speed"
-	@echo "# OR: ./build/pump-fun-bot --skip-validation --jito --parallel-workers 5"
-	@echo ""
-	@echo "🎯 Filtered Trading with Protection:"
-	@echo "./build/pump-fun-bot --network mainnet --match 'doge' --jito --hold"
+	@echo "🎯 Filtered Trading:"
+	@echo "./build/pump-fun-bot --network mainnet --match 'doge' --hold"
 	@echo ""
 	@echo "💰 High-Frequency Trading:"
-	@echo "./build/pump-fun-bot --network mainnet --yolo --skip-validation --jito --parallel-workers 5"
-	@echo ""
-	@echo "🌍 Regional Optimization (Europe):"
-	@echo "PUMPBOT_JITO_ENDPOINT=https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles ./build/pump-fun-bot --jito"
+	@echo "./build/pump-fun-bot --network mainnet --yolo --skip-validation --parallel-workers 5"
 	@echo ""
 	@echo "🔧 Custom Configuration:"
-	@echo "PUMPBOT_TRADING_BUY_AMOUNT_SOL=0.05 PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS=3 make run-jito"
+	@echo "PUMPBOT_TRADING_BUY_AMOUNT_SOL=0.05 PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS=3 make run"
 	@echo ""
 	@echo "📊 Testing & Development:"
-	@echo "make test-jito                                    # Test Jito connectivity"
-	@echo "./build/pump-fun-bot --network devnet --jito --dry-run --log-level debug --benchmark"
+	@echo "./build/pump-fun-bot --network devnet --dry-run --log-level debug --benchmark"
 	@echo ""
 	@echo "⚠️  Always start with devnet and --dry-run for testing!"
 
@@ -386,10 +316,9 @@ examples:
 bench-ultra-fast:
 	@echo "🏃‍♂️ Benchmarking ultra-fast performance..."
 	@echo "Testing different worker counts and configurations..."
-	@cd scripts && go run test_jito.go
 	@echo ""
 	@echo "Running bot performance test..."
-	@timeout 30 ./build/pump-fun-bot --network devnet --jito --dry-run --log-level info --benchmark || true
+	@timeout 30 ./build/pump-fun-bot --network devnet --dry-run --log-level info --benchmark || true
 	@echo "Ultra-fast performance benchmarking completed"
 
 # Create example environment files
@@ -405,21 +334,10 @@ create-env-examples:
 	@echo "PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS=1" >> configs/.env.conservative
 	@echo "PUMPBOT_LOGGING_LEVEL=info" >> configs/.env.conservative
 
-	@echo "# MEV Protected ultra-fast trading" > configs/.env.jito
-	@echo "PUMPBOT_NETWORK=mainnet" >> configs/.env.jito
-	@echo "PUMPBOT_JITO_ENABLED=true" >> configs/.env.jito
-	@echo "PUMPBOT_JITO_USE_FOR_TRADING=true" >> configs/.env.jito
-	@echo "PUMPBOT_JITO_TIP_AMOUNT=15000" >> configs/.env.jito
-	@echo "PUMPBOT_TRADING_BUY_AMOUNT_SOL=0.01" >> configs/.env.jito
-	@echo "PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS=3" >> configs/.env.jito
-
-	@echo "# Maximum speed + Jito protection" > configs/.env.max-speed
+	@echo "# Maximum speed ultra-fast trading" > configs/.env.max-speed
 	@echo "PUMPBOT_NETWORK=mainnet" >> configs/.env.max-speed
 	@echo "PUMPBOT_ULTRA_FAST_SKIP_VALIDATION=true" >> configs/.env.max-speed
 	@echo "PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS=5" >> configs/.env.max-speed
-	@echo "PUMPBOT_JITO_ENABLED=true" >> configs/.env.max-speed
-	@echo "PUMPBOT_JITO_USE_FOR_TRADING=true" >> configs/.env.max-speed
-	@echo "PUMPBOT_JITO_TIP_AMOUNT=20000" >> configs/.env.max-speed
 
 	@echo "# Aggressive ultra-fast trading (high risk)" > configs/.env.aggressive
 	@echo "PUMPBOT_NETWORK=mainnet" >> configs/.env.aggressive
@@ -428,15 +346,13 @@ create-env-examples:
 	@echo "PUMPBOT_ULTRA_FAST_SKIP_VALIDATION=true" >> configs/.env.aggressive
 	@echo "PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS=5" >> configs/.env.aggressive
 	@echo "PUMPBOT_ULTRA_FAST_PRIORITY_OVER_SAFETY=true" >> configs/.env.aggressive
-	@echo "PUMPBOT_JITO_ENABLED=true" >> configs/.env.aggressive
 
 	@echo "✅ Created example environment files:"
 	@echo "  - configs/.env.conservative  (Safe for beginners)"
-	@echo "  - configs/.env.jito          (MEV protected)"
-	@echo "  - configs/.env.max-speed     (Maximum speed + protection)"
+	@echo "  - configs/.env.max-speed     (Maximum speed)"
 	@echo "  - configs/.env.aggressive    (High risk/reward)"
 	@echo ""
-	@echo "Usage: ./build/pump-fun-bot --env configs/.env.jito"
+	@echo "Usage: ./build/pump-fun-bot --env configs/.env.conservative"
 
 # Comprehensive setup for new users
 .PHONY: setup-complete
@@ -447,8 +363,7 @@ setup-complete: setup create-env-examples
 	@echo "📋 Next steps:"
 	@echo "1. Copy .env.example to .env and set your PUMPBOT_PRIVATE_KEY"
 	@echo "2. Test the setup: make test-devnet"
-	@echo "3. Test Jito: make test-jito"
-	@echo "4. Start trading: make run-jito-devnet"
+	@echo "3. Start trading: make run-devnet"
 	@echo ""
 	@echo "📚 Learn more:"
 	@echo "- make help-ultra-fast  # Ultra-fast specific commands"
@@ -459,7 +374,7 @@ setup-complete: setup create-env-examples
 .PHONY: validate-config
 validate-config:
 	@echo "🔍 Validating current configuration..."
-	@if [ -z "$PUMPBOT_PRIVATE_KEY" ]; then \
+	@if [ -z "$$PUMPBOT_PRIVATE_KEY" ]; then \
 		echo "❌ PUMPBOT_PRIVATE_KEY not set"; \
 		echo "Set it with: export PUMPBOT_PRIVATE_KEY='your_key_here'"; \
 		exit 1; \
@@ -467,11 +382,10 @@ validate-config:
 		echo "✅ Private key is set"; \
 	fi
 
-	@echo "Network: ${PUMPBOT_NETWORK:-mainnet}"
-	@echo "Buy Amount: ${PUMPBOT_TRADING_BUY_AMOUNT_SOL:-0.01} SOL"
-	@echo "Parallel Workers: ${PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS:-3}"
-	@echo "Jito Enabled: ${PUMPBOT_JITO_ENABLED:-false}"
-	@echo "Skip Validation: ${PUMPBOT_ULTRA_FAST_SKIP_VALIDATION:-false}"
+	@echo "Network: $${PUMPBOT_NETWORK:-mainnet}"
+	@echo "Buy Amount: $${PUMPBOT_TRADING_BUY_AMOUNT_SOL:-0.01} SOL"
+	@echo "Parallel Workers: $${PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS:-3}"
+	@echo "Skip Validation: $${PUMPBOT_ULTRA_FAST_SKIP_VALIDATION:-false}"
 	@echo ""
 	@echo "✅ Configuration validation complete"
 
@@ -482,22 +396,16 @@ estimate-costs:
 	@echo "============================================"
 	@echo ""
 	@echo "Based on current configuration:"
-	@echo "Buy Amount: ${PUMPBOT_TRADING_BUY_AMOUNT_SOL:-0.01} SOL"
-	@echo "Parallel Workers: ${PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS:-3}"
+	@echo "Buy Amount: $${PUMPBOT_TRADING_BUY_AMOUNT_SOL:-0.01} SOL"
+	@echo "Parallel Workers: $${PUMPBOT_ULTRA_FAST_PARALLEL_WORKERS:-3}"
 	@echo ""
 	@echo "Cost breakdown per trade:"
 	@echo "- Base transaction fee: ~0.000005 SOL"
 	@echo "- Priority fee: ~0.000010-0.000050 SOL"
-	@if [ "${PUMPBOT_JITO_ENABLED}" = "true" ]; then \
-		tip_sol=$(echo "scale=6; ${PUMPBOT_JITO_TIP_AMOUNT:-10000} / 1000000000" | bc -l 2>/dev/null || echo "0.00001"); \
-		echo "- Jito tip: ~$tip_sol SOL"; \
-	fi
 	@echo ""
 	@echo "Estimated total: 0.000015-0.000055 SOL per trade"
 	@echo "As percentage of buy amount: 0.15%-0.55%"
 	@echo ""
 	@echo "💡 Tips to reduce costs:"
 	@echo "- Use lower priority fees during low congestion"
-	@echo "- Adjust Jito tips based on network conditions"
-	@echo "- Use regional Jito endpoints for better performance"
 	@echo "- Optimize parallel workers based on your setup"

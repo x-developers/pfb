@@ -93,16 +93,6 @@ ultra_fast:
   immediate_execution: ${PUMPBOT_ULTRA_FAST_IMMEDIATE_EXECUTION:-true}
   priority_over_safety: ${PUMPBOT_ULTRA_FAST_PRIORITY_OVER_SAFETY:-false}
 
-# JITO MEV Protection Settings
-jito:
-  enabled: ${PUMPBOT_JITO_ENABLED:-true}
-  endpoint: "${PUMPBOT_JITO_ENDPOINT:-https://mainnet.block-engine.jito.wtf/api/v1/bundles}"
-  api_key: "${PUMPBOT_JITO_API_KEY:-}"
-  tip_amount: ${PUMPBOT_JITO_TIP_AMOUNT:-10000}
-  use_for_trading: ${PUMPBOT_JITO_USE_FOR_TRADING:-true}
-  confirm_timeout: ${PUMPBOT_JITO_CONFIRM_TIMEOUT:-30}
-  max_bundle_size: ${PUMPBOT_JITO_MAX_BUNDLE_SIZE:-5}
-
 # Logging settings
 logging:
   level: "${PUMPBOT_LOGGING_LEVEL:-info}"
@@ -164,13 +154,6 @@ advanced:
 # export PUMPBOT_TRADING_BUY_AMOUNT_TOKENS="5000000"
 # export PUMPBOT_TRADING_AUTO_SELL="true"
 # export PUMPBOT_TRADING_SELL_DELAY_MS="500"
-
-# 🛡️ TOKEN-BASED + MEV PROTECTION:
-# export PUMPBOT_TRADING_USE_TOKEN_AMOUNT="true"
-# export PUMPBOT_TRADING_BUY_AMOUNT_TOKENS="3000000"
-# export PUMPBOT_JITO_ENABLED="true"
-# export PUMPBOT_JITO_USE_FOR_TRADING="true"
-# export PUMPBOT_TRADING_SELL_DELAY_MS="1000"
 
 # 💀 MAXIMUM SPEED (EXTREMELY RISKY):
 # export PUMPBOT_TRADING_USE_TOKEN_AMOUNT="true"
