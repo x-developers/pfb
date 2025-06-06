@@ -23,3 +23,21 @@ func (p *PumpFunPDADerivation) DeriveCreatorVault(creator solana.PublicKey) (sol
 
 	return data, nonce, err
 }
+
+// DeriveBondingCurve derives the bonding curve PDA using the mint
+func (p *PumpFunPDADerivation) DeriveBondingCurve(mint solana.PublicKey) (solana.PublicKey, uint8, error) {
+	seeds := [][]byte{
+		[]byte("bonding-curve"),
+		mint.Bytes(),
+	}
+
+	programID := solana.PublicKeyFromBytes(config.PumpFunProgramID)
+	pda, nonce, err := solana.FindProgramAddress(seeds, programID)
+
+	return pda, nonce, err
+}
+
+// DeriveAssociatedBondingCurve derives the associated bonding curve token account
+func (p *PumpFunPDADerivation) DeriveAssociatedBondingCurve(bondingCurve, mint solana.PublicKey) (solana.PublicKey, uint8, error) {
+	return solana.FindAssociatedTokenAddress(bondingCurve, mint)
+}

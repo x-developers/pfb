@@ -26,6 +26,7 @@ import (
 type TokenInfo struct {
 	Mint              solana.PublicKey       `json:"mint"`
 	ATAAddress        solana.PublicKey       `json:"ata_address"`
+	Creator           solana.PublicKey       `json:"ata_address"`
 	Balance           uint64                 `json:"balance"`
 	UIAmount          float64                `json:"ui_amount"`
 	Decimals          uint8                  `json:"decimals"`
@@ -317,41 +318,41 @@ func (wtm *WalletTokenManager) listTokensWithCurveAnalysis() error {
 	pumpFunCount := 0
 	totalValue := 0.0
 
-	for i, token := range tokens {
+	for i, _token := range tokens {
 		fmt.Printf("Token #%d:\n", i+1)
-		fmt.Printf("  🪙 Mint: %s\n", token.Mint.String())
-		fmt.Printf("  📍 ATA Address: %s\n", token.ATAAddress.String())
-		fmt.Printf("  💰 Balance: %v tokens (%.6f UI)\n", token.Balance, token.UIAmount)
-		fmt.Printf("  🔢 Decimals: %d\n", token.Decimals)
-		fmt.Printf("  🎯 Pump.fun Token: %v\n", token.IsPumpFunToken)
+		fmt.Printf("  🪙 Mint: %s\n", _token.Mint.String())
+		fmt.Printf("  📍 ATA Address: %s\n", _token.ATAAddress.String())
+		fmt.Printf("  💰 Balance: %v tokens (%.6f UI)\n", _token.Balance, _token.UIAmount)
+		fmt.Printf("  🔢 Decimals: %d\n", _token.Decimals)
+		fmt.Printf("  🎯 Pump.fun Token: %v\n", _token.IsPumpFunToken)
 
-		if token.IsPumpFunToken {
+		if _token.IsPumpFunToken {
 			pumpFunCount++
-			fmt.Printf("  📈 Bonding Curve: %s\n", token.BondingCurve.String())
-			fmt.Printf("  🔗 Assoc Bonding Curve: %s\n", token.AssocBondingCurve.String())
+			fmt.Printf("  📈 Bonding Curve: %s\n", _token.BondingCurve.String())
+			fmt.Printf("  🔗 Assoc Bonding Curve: %s\n", _token.AssocBondingCurve.String())
 
 			// Display market stats if available
-			if token.MarketStats != nil {
+			if _token.MarketStats != nil {
 				fmt.Printf("  📊 Market Analysis:\n")
-				if price, ok := token.MarketStats["current_price_sol"].(float64); ok {
+				if price, ok := _token.MarketStats["current_price_sol"].(float64); ok {
 					fmt.Printf("    💱 Current Price: %.9f SOL\n", price)
 				}
-				if marketCap, ok := token.MarketStats["market_cap_sol"].(float64); ok {
+				if marketCap, ok := _token.MarketStats["market_cap_sol"].(float64); ok {
 					fmt.Printf("    🏪 Market Cap: %.3f SOL\n", marketCap)
 				}
-				if liquidity, ok := token.MarketStats["liquidity_sol"].(float64); ok {
+				if liquidity, ok := _token.MarketStats["liquidity_sol"].(float64); ok {
 					fmt.Printf("    🌊 Liquidity: %.3f SOL\n", liquidity)
 				}
-				if progress, ok := token.MarketStats["curve_progress_percent"].(float64); ok {
+				if progress, ok := _token.MarketStats["curve_progress_percent"].(float64); ok {
 					fmt.Printf("    📈 Curve Progress: %.1f%%\n", progress)
 				}
-				if complete, ok := token.MarketStats["curve_complete"].(bool); ok && complete {
+				if complete, ok := _token.MarketStats["curve_complete"].(bool); ok && complete {
 					fmt.Printf("    ✅ Curve Status: COMPLETED\n")
 				}
 
 				// Calculate estimated value
-				if price, ok := token.MarketStats["current_price_sol"].(float64); ok {
-					estimatedValue := price * token.UIAmount
+				if price, ok := _token.MarketStats["current_price_sol"].(float64); ok {
+					estimatedValue := price * _token.UIAmount
 					totalValue += estimatedValue
 					fmt.Printf("    💵 Estimated Value: %.6f SOL\n", estimatedValue)
 				}
@@ -854,11 +855,23 @@ func (wtm *WalletTokenManager) executeCurveAwareSell(token TokenInfo, sellAmount
 		AssociatedBondingCurve: token.AssocBondingCurve,
 	}
 
-	// Derive creator vault (required for pump.fun instructions)
+	// Get bonding curve account data to extract the creator
+	bondingCurveInfo, err := wtm.rpcClient.GetAccountInfo(wtm.ctx, token.BondingCurve.String())
+	if err != nil {
+		result.Error = fmt.Sprintf("failed to get bonding curve info: %v", err)
+		return false
+	}
+
+	if bondingCurveInfo == nil || bondingCurveInfo.Value == nil || len(bondingCurveInfo.Value.Data.GetBinary()) < 40 {
+		result.Error = "invalid bonding curve data"
+		return false
+	}
+
+	// Derive creator vault PDA using creator public key
 	pumpFunProgram := solana.PublicKeyFromBytes(config.PumpFunProgramID)
 	creatorVaultSeeds := [][]byte{
 		[]byte("creator-vault"),
-		token.Mint.Bytes(),
+		token.Creator.Bytes(),
 	}
 	creatorVault, _, err := solana.FindProgramAddress(creatorVaultSeeds, pumpFunProgram)
 	if err != nil {
@@ -866,7 +879,6 @@ func (wtm *WalletTokenManager) executeCurveAwareSell(token TokenInfo, sellAmount
 		return false
 	}
 	tokenEvent.CreatorVault = creatorVault
-
 	// Use curve calculation for minimum SOL output with slippage protection
 	slippageFactor := 1.0 - float64(wtm.config.Trading.SlippageBP)/10000.0
 	minSolOutput := uint64(float64(curveCalc.AmountOut) * slippageFactor)
@@ -1081,6 +1093,18 @@ func (wtm *WalletTokenManager) getAllTokens() ([]TokenInfo, error) {
 				assocBondingCurve, _, err := solana.FindAssociatedTokenAddress(bondingCurve, mint)
 				if err == nil {
 					tokenInfo.AssocBondingCurve = assocBondingCurve
+				}
+
+				curveData := bondingCurveInfo.Value.Data.GetBinary()
+				creatorOffset := 8 + 8 + 8 + 8 + 8 + 8 + 1 // Skip to creator field
+				if len(curveData) >= creatorOffset+32 {
+					tokenInfo.Creator = solana.PublicKeyFromBytes(curveData[creatorOffset : creatorOffset+32])
+				} else {
+					// Fallback: try different offset or use a default approach
+					// Sometimes the structure might be different, so we try another common offset
+					if len(curveData) >= 64 {
+						tokenInfo.Creator = solana.PublicKeyFromBytes(curveData[32:64])
+					}
 				}
 			}
 		}
