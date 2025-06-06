@@ -113,47 +113,6 @@ func (te *TokenEvent) GetProcessingStep(step string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// CalculateProcessingLatency calculates latency between two processing steps
-func (te *TokenEvent) CalculateProcessingLatency(fromStep, toStep string) time.Duration {
-	fromTime, fromExists := te.GetProcessingStep(fromStep)
-	toTime, toExists := te.GetProcessingStep(toStep)
-
-	if !fromExists || !toExists {
-		return 0
-	}
-
-	return toTime.Sub(fromTime)
-}
-
-// Validate validates the token event data
-func (te *TokenEvent) Validate() error {
-	if te.Mint.IsZero() {
-		return fmt.Errorf("mint address is zero")
-	}
-
-	if te.BondingCurve.IsZero() {
-		return fmt.Errorf("bonding curve address is zero")
-	}
-
-	if te.Creator.IsZero() {
-		return fmt.Errorf("creator address is zero")
-	}
-
-	if te.Name == "" {
-		return fmt.Errorf("token name is empty")
-	}
-
-	if te.Symbol == "" {
-		return fmt.Errorf("token symbol is empty")
-	}
-
-	if te.Signature == "" {
-		return fmt.Errorf("signature is empty")
-	}
-
-	return nil
-}
-
 // String returns a string representation of the token event
 func (te *TokenEvent) String() string {
 	return fmt.Sprintf("Token{Mint: %s, Name: %s, Symbol: %s, Creator: %s, Age: %dms, Source: %s}",
@@ -192,46 +151,6 @@ func (te *TokenEvent) LogFields() map[string]interface{} {
 		"is_fresh":                 te.IsFresh(),
 		"is_very_fresh":            te.IsVeryFresh(),
 	}
-}
-
-// Clone creates a deep copy of the token event
-func (te *TokenEvent) Clone() *TokenEvent {
-	clone := &TokenEvent{
-		Signature:              te.Signature,
-		Slot:                   te.Slot,
-		BlockTime:              te.BlockTime,
-		Mint:                   te.Mint,
-		BondingCurve:           te.BondingCurve,
-		AssociatedBondingCurve: te.AssociatedBondingCurve,
-		Creator:                te.Creator,
-		CreatorVault:           te.CreatorVault,
-		User:                   te.User,
-		Name:                   te.Name,
-		Symbol:                 te.Symbol,
-		URI:                    te.URI,
-		InitialPrice:           te.InitialPrice,
-		Timestamp:              te.Timestamp,
-		DiscoveredAt:           te.DiscoveredAt,
-		ProcessingDelayMs:      te.ProcessingDelayMs,
-		Source:                 te.Source,
-		IsConfirmed:            te.IsConfirmed,
-	}
-
-	// Deep copy raw data
-	if te.RawData != nil {
-		clone.RawData = make([]byte, len(te.RawData))
-		copy(clone.RawData, te.RawData)
-	}
-
-	// Deep copy metadata
-	if te.Metadata != nil {
-		clone.Metadata = make(map[string]interface{})
-		for k, v := range te.Metadata {
-			clone.Metadata[k] = v
-		}
-	}
-
-	return clone
 }
 
 // TokenEventStats represents statistics about token events

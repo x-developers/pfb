@@ -102,18 +102,14 @@ func (c *Client) getCachedBlockhash() solana.Hash {
 	return solana.Hash{}
 }
 
-// cacheBlockhash stores blockhash in cache
 func (c *Client) cacheBlockhash(blockhash solana.Hash) {
 	c.blockhashMutex.Lock()
 	defer c.blockhashMutex.Unlock()
 
 	c.cachedBlockhash = blockhash
 	c.blockhashTimestamp = time.Now()
-
-	c.logger.Debug("🔗 Blockhash cached")
 }
 
-// blockhashUpdater periodically updates the cached blockhash
 func (c *Client) blockhashUpdater() {
 	ticker := time.NewTicker(5 * time.Second) // Update every 5 seconds
 	defer ticker.Stop()
@@ -121,9 +117,8 @@ func (c *Client) blockhashUpdater() {
 	for {
 		select {
 		case <-ticker.C:
-			//ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-
-			result, err := c.client.GetLatestBlockhash(context.TODO(), rpc.CommitmentProcessed)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			result, err := c.client.GetLatestBlockhash(ctx, rpc.CommitmentProcessed)
 			if err == nil {
 				c.cacheBlockhash(result.Value.Blockhash)
 				c.logger.Debug("🔄 Blockhash updated in background")
@@ -131,12 +126,11 @@ func (c *Client) blockhashUpdater() {
 				c.logger.WithError(err).Debug("Failed to update blockhash in background")
 			}
 
-			//cancel()
+			cancel()
 		}
 	}
 }
 
-// GetBlockhashCacheInfo returns information about blockhash cache
 func (c *Client) GetBlockhashCacheInfo() map[string]interface{} {
 	c.blockhashMutex.RLock()
 	defer c.blockhashMutex.RUnlock()
@@ -151,7 +145,6 @@ func (c *Client) GetBlockhashCacheInfo() map[string]interface{} {
 	}
 }
 
-// GetTokenBalance gets token account balance
 func (c *Client) GetTokenBalance(ctx context.Context, address string) (uint64, error) {
 	pubkey, err := solana.PublicKeyFromBase58(address)
 	if err != nil {

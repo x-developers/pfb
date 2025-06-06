@@ -164,13 +164,6 @@ func (lf *ListenerFactory) applyFilters(baseListener ListenerInterface) (Listene
 		lf.logger.WithField("max_age_ms", lf.config.Trading.MaxTokenAgeMs).Info("⏰ Freshness filter applied")
 	}
 
-	//Apply confirmation filter for non-YOLO modes
-	//if !lf.config.Strategy.YoloMode && !lf.config.UltraFast.SkipValidation {
-	//	confirmedFilter := ConfirmedFilter()
-	//	filters = append(filters, confirmedFilter)
-	//	lf.logger.Info("✅ Confirmation filter applied")
-	//}
-
 	// If no filters, return base listener
 	if len(filters) == 0 {
 		lf.logger.Info("🔓 No filters configured - all tokens will be processed")
@@ -204,71 +197,4 @@ func (lf *ListenerFactory) hasFiltersConfigured() bool {
 		(lf.config.Strategy.FilterByCreator && len(lf.config.Strategy.AllowedCreators) > 0) ||
 		(lf.config.UltraFast.Enabled && lf.config.Trading.MaxTokenAgeMs > 0) ||
 		(!lf.config.Strategy.YoloMode && !lf.config.UltraFast.SkipValidation)
-}
-
-// GetSupportedListenerTypes returns all supported listener types
-func (lf *ListenerFactory) GetSupportedListenerTypes() []config.ListenerType {
-	return []config.ListenerType{
-		config.LogsListenerType,
-		config.BlocksListenerType,
-		config.MultiListenerType, // Теперь это просто алиас для автовыбора
-	}
-}
-
-// GetRecommendedListenerType returns the recommended listener type based on strategy
-func (lf *ListenerFactory) GetRecommendedListenerType() config.ListenerType {
-	// For ultra-fast mode, prefer logs listener for speed
-	if lf.config.UltraFast.Enabled || lf.config.Strategy.YoloMode {
-		lf.logger.Info("💡 Recommended: Logs listener (optimized for speed)")
-		return config.LogsListenerType
-	}
-
-	// For conservative strategies, prefer blocks listener for reliability
-	if lf.config.Strategy.HoldOnly || lf.config.Strategy.Type == "holder" {
-		lf.logger.Info("💡 Recommended: Blocks listener (higher reliability)")
-		return config.BlocksListenerType
-	}
-
-	// Default recommendation based on network
-	if lf.config.Network == "devnet" {
-		lf.logger.Info("💡 Recommended: Logs listener (devnet default)")
-		return config.LogsListenerType
-	}
-
-	lf.logger.Info("💡 Recommended: Logs listener (balanced approach)")
-	return config.LogsListenerType
-}
-
-// CreateOptimalListener creates the optimal listener for current configuration
-func (lf *ListenerFactory) CreateOptimalListener() (ListenerInterface, error) {
-	// Use configured type if specified, otherwise use recommended
-	listenerType := lf.config.Listener.Type
-	if listenerType == "" {
-		listenerType = lf.GetRecommendedListenerType()
-		lf.logger.WithField("auto_selected_type", listenerType).Info("🤖 Auto-selected optimal listener type")
-	}
-
-	return lf.CreateListener(listenerType)
-}
-
-// GetFactoryStats returns factory statistics and configuration
-func (lf *ListenerFactory) GetFactoryStats() map[string]interface{} {
-	return map[string]interface{}{
-		"factory_type":         "listener_factory",
-		"configured_type":      lf.config.Listener.Type,
-		"recommended_type":     lf.GetRecommendedListenerType(),
-		"supported_types":      lf.GetSupportedListenerTypes(),
-		"buffer_size":          lf.config.Listener.BufferSize,
-		"parallel_processing":  lf.config.Listener.ParallelProcessing,
-		"worker_count":         lf.config.Listener.WorkerCount,
-		"duplicate_filter":     lf.config.Listener.EnableDuplicateFilter,
-		"duplicate_filter_ttl": lf.config.Listener.DuplicateFilterTTL,
-		"filters_configured":   lf.hasFiltersConfigured(),
-		"ultra_fast_enabled":   lf.config.UltraFast.Enabled,
-		"strategy_type":        lf.config.Strategy.Type,
-		"yolo_mode":            lf.config.Strategy.YoloMode,
-		"hold_only":            lf.config.Strategy.HoldOnly,
-		"network":              lf.config.Network,
-		"simplified_factory":   true, // Указываем что это упрощенная версия
-	}
 }

@@ -3,8 +3,8 @@ package pumpfun
 
 import (
 	"encoding/binary"
-	"fmt"
 	"github.com/gagliardetto/solana-go"
+	associatedtokenaccount "github.com/gagliardetto/solana-go/programs/associated-token-account"
 )
 
 // PumpFunConstants contains all pump.fun program constants
@@ -62,6 +62,14 @@ func CreatePumpFunAccountMetas(
 		{PublicKey: constants.EventAuthority, IsWritable: false, IsSigner: false},         // 10: eventAuthority
 		{PublicKey: constants.ProgramID, IsWritable: false, IsSigner: false},              // 11: program
 	}
+}
+
+func CreateAssociatedAccountInstruction(mint solana.PublicKey, wallet solana.PublicKey) solana.Instruction {
+	return associatedtokenaccount.NewCreateInstruction(
+		wallet, // payer
+		wallet, // wallet
+		mint,   // mint
+	).Build()
 }
 
 // CreatePumpFunBuyInstruction creates a pump.fun buy instruction
@@ -195,49 +203,4 @@ func createSellInstructionData(tokenAmount uint64, minSolOutput uint64) []byte {
 	data[23] = byte(minSolOutput >> 56)
 
 	return data
-}
-
-// ValidatePumpFunAccounts validates that the token event has all required accounts
-func ValidatePumpFunAccounts(tokenEvent *TokenEvent) error {
-	if tokenEvent.Mint.IsZero() {
-		return fmt.Errorf("mint address is zero")
-	}
-
-	if tokenEvent.BondingCurve.IsZero() {
-		return fmt.Errorf("bonding curve address is zero")
-	}
-
-	if tokenEvent.AssociatedBondingCurve.IsZero() {
-		return fmt.Errorf("associated bonding curve address is zero")
-	}
-
-	if tokenEvent.Creator.IsZero() {
-		return fmt.Errorf("creator address is zero")
-	}
-
-	if tokenEvent.CreatorVault.IsZero() {
-		return fmt.Errorf("creator vault address is zero")
-	}
-
-	return nil
-}
-
-// GetAccountsDebugInfo returns debug information about the accounts used
-func GetAccountsDebugInfo(tokenEvent *TokenEvent, userWallet solana.PublicKey) map[string]string {
-	constants := GetPumpFunConstants()
-
-	return map[string]string{
-		"program_id":               constants.ProgramID.String(),
-		"global":                   constants.Global.String(),
-		"fee_recipient":            constants.FeeRecipient.String(),
-		"event_authority":          constants.EventAuthority.String(),
-		"mint":                     tokenEvent.Mint.String(),
-		"bonding_curve":            tokenEvent.BondingCurve.String(),
-		"associated_bonding_curve": tokenEvent.AssociatedBondingCurve.String(),
-		"creator":                  tokenEvent.Creator.String(),
-		"creator_vault":            tokenEvent.CreatorVault.String(),
-		"user_wallet":              userWallet.String(),
-		"system_program":           solana.SystemProgramID.String(),
-		"token_program":            solana.TokenProgramID.String(),
-	}
 }

@@ -1,4 +1,3 @@
-// internal/pumpfun/trader_interface.go
 package pumpfun
 
 import (

@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/blocto/solana-go-sdk/common"
-	"math"
 	"pump-fun-bot-go/internal/client"
 
 	"pump-fun-bot-go/internal/config"
@@ -85,13 +84,6 @@ func (pc *PriceCalculator) GetSOLForTokens(ctx context.Context, bondingCurveAddr
 
 // GetBondingCurveData fetches and decodes bonding curve account data
 func (pc *PriceCalculator) GetBondingCurveData(ctx context.Context, bondingCurveAddress common.PublicKey) (*BondingCurveData, error) {
-	//accountInfo, err := pc.rpcClient.GetAccountInfo(ctx, bondingCurveAddress.String())
-	//if err != nil {
-	//	return nil, fmt.Errorf("failed to get account info: %w", err)
-	//}
-
-	// For now, we'll use mock data structure
-	// In production, you'd decode the actual bonding curve account data
 	return pc.decodeBondingCurveData([]byte{})
 }
 
@@ -164,12 +156,6 @@ func (pc *PriceCalculator) CalculateBuyPrice(curveData *BondingCurveData, tokenA
 	if curveData.VirtualTokenReserves == 0 || tokenAmount == 0 {
 		return 0
 	}
-
-	// Using constant product formula: x * y = k
-	// Where x = token reserves, y = SOL reserves
-	// New token reserves = current - amount to buy
-	// New SOL reserves = k / new token reserves
-	// SOL cost = current SOL reserves - new SOL reserves
 
 	virtualTokenReserves := float64(curveData.VirtualTokenReserves)
 	virtualSolReserves := float64(curveData.VirtualSolReserves)
@@ -254,50 +240,4 @@ func (pc *PriceCalculator) CalculateTokensForSOL(curveData *BondingCurveData, so
 // CalculateSOLForTokens calculates SOL received for selling tokens
 func (pc *PriceCalculator) CalculateSOLForTokens(curveData *BondingCurveData, tokenAmount uint64) uint64 {
 	return pc.CalculateSellPrice(curveData, tokenAmount)
-}
-
-// CalculateSlippage calculates the slippage for a trade
-func (pc *PriceCalculator) CalculateSlippage(expectedPrice, actualPrice float64) float64 {
-	if expectedPrice == 0 {
-		return 0
-	}
-	return math.Abs((actualPrice-expectedPrice)/expectedPrice) * 100
-}
-
-// ApplySlippageToAmount applies slippage tolerance to an amount
-func (pc *PriceCalculator) ApplySlippageToAmount(amount uint64, slippageBP int, isBuy bool) uint64 {
-	slippagePercent := float64(slippageBP) / 10000 // Convert basis points to percentage
-	amountFloat := float64(amount)
-
-	if isBuy {
-		// For buys, increase the amount to account for slippage (pay more)
-		return uint64(amountFloat * (1 + slippagePercent))
-	} else {
-		// For sells, decrease the amount to account for slippage (accept less)
-		return uint64(amountFloat * (1 - slippagePercent))
-	}
-}
-
-// GetMarketCap calculates the market cap of a token
-func (pc *PriceCalculator) GetMarketCap(curveData *BondingCurveData) float64 {
-	price := pc.CalculatePrice(curveData)
-	return price * float64(curveData.TokenTotalSupply) / config.LamportsPerSol
-}
-
-// GetLiquidity calculates the liquidity in the bonding curve
-func (pc *PriceCalculator) GetLiquidity(curveData *BondingCurveData) float64 {
-	return float64(curveData.RealSolReserves) / config.LamportsPerSol
-}
-
-// EstimateGasForTrade estimates gas cost for a trade
-func (pc *PriceCalculator) EstimateGasForTrade(isBuy bool) uint64 {
-	// Base transaction fee
-	baseFee := uint64(5000) // 5000 lamports base fee
-
-	if isBuy {
-		// Buy transactions are typically more expensive due to token account creation
-		return baseFee + 10000 // Additional 10k lamports for buy
-	}
-
-	return baseFee + 5000 // Additional 5k lamports for sell
 }

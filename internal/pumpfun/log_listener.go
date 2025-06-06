@@ -156,13 +156,6 @@ func (l *LogListener) handleLogsNotification(data interface{}) error {
 	logs := notification.Result.Value.Logs
 	slot := notification.Result.Context.Slot
 
-	l.config.Logger.WithFields(logrus.Fields{
-		"signature":  signature,
-		"slot":       slot,
-		"logs_count": len(logs),
-		"timestamp":  processingStart.Format("15:04:05.000"),
-	}).Debug("🔍 Processing logs notification")
-
 	// Process program logs to extract token information
 	tokenInfo, err := l.processProgramLogs(logs, signature, slot, processingStart)
 	if err != nil {

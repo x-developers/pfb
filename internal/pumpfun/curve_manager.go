@@ -96,8 +96,6 @@ func (cm *CurveManager) GetBondingCurveState(ctx context.Context, bondingCurveAd
 		state.Complete = data[offset] != 0
 	}
 
-	cm.logger.WithFields(logrus.Fields{}).Debug("Retrieved bonding curve state")
-
 	return state, nil
 }
 
@@ -175,17 +173,6 @@ func (cm *CurveManager) calculateSellReturnFromState(state *BondingCurveState, t
 		PriceImpact:          priceImpact,
 		SlippageToleranceMet: true, // Will be checked against tolerance later
 	}
-
-	cm.logger.WithFields(logrus.Fields{
-		"token_amount":         tokenAmount,
-		"sol_received_gross":   uint64(solReceived),
-		"fee":                  uint64(fee),
-		"sol_received_net":     uint64(solAfterFee),
-		"price_per_token":      effectivePricePerToken,
-		"price_impact_percent": priceImpact,
-		"price_before":         priceBefore,
-		"price_after":          priceAfter,
-	}).Debug("Calculated sell return")
 
 	return result
 }
@@ -265,17 +252,6 @@ func (cm *CurveManager) calculateBuyAmountFromState(state *BondingCurveState, so
 		SlippageToleranceMet: true,
 	}
 
-	cm.logger.WithFields(logrus.Fields{
-		"sol_amount":           solAmount,
-		"fee":                  uint64(fee),
-		"sol_after_fee":        uint64(solAfterFee),
-		"tokens_received":      uint64(tokensReceived),
-		"price_per_token":      effectivePricePerToken,
-		"price_impact_percent": priceImpact,
-		"price_before":         priceBefore,
-		"price_after":          priceAfter,
-	}).Debug("Calculated buy amount")
-
 	return result
 }
 
@@ -294,14 +270,6 @@ func (cm *CurveManager) CheckSlippageTolerance(
 	minAcceptableAmount := float64(expectedAmountOut) * (1 - slippageFactor)
 
 	result.SlippageToleranceMet = float64(result.AmountOut) >= minAcceptableAmount
-
-	cm.logger.WithFields(logrus.Fields{
-		"expected_amount":       expectedAmountOut,
-		"actual_amount":         result.AmountOut,
-		"min_acceptable":        uint64(minAcceptableAmount),
-		"slippage_tolerance_bp": slippageToleranceBP,
-		"tolerance_met":         result.SlippageToleranceMet,
-	}).Debug("Checked slippage tolerance")
 
 	return result.SlippageToleranceMet
 }
@@ -422,11 +390,6 @@ func (cm *CurveManager) SimulateSellImpact(
 		}
 	}
 
-	cm.logger.WithFields(logrus.Fields{
-		"token_balance":     tokenBalance,
-		"simulations_count": len(results),
-	}).Debug("Simulated sell impact for different percentages")
-
 	return results, nil
 }
 
@@ -461,14 +424,6 @@ func (cm *CurveManager) ValidateSellTransaction(
 		cm.logger.WithField("price_impact", result.PriceImpact).
 			Warn("High price impact detected for sell transaction")
 	}
-
-	cm.logger.WithFields(logrus.Fields{
-		"token_amount":   tokenAmount,
-		"min_sol_output": minSolOutput,
-		"calculated_sol": result.AmountOut,
-		"price_impact":   result.PriceImpact,
-		"validation":     "passed",
-	}).Debug("Sell transaction validation passed")
 
 	return nil
 }

@@ -743,18 +743,3 @@ func (s *Seller) GetStats() map[string]interface{} {
 
 	return stats
 }
-
-// GetCurveManager returns the curve manager instance
-func (s *Seller) GetCurveManager() *CurveManager {
-	return s.curveManager
-}
-
-// SimulateSell simulates a sell operation without executing it
-func (s *Seller) SimulateSell(ctx context.Context, tokenEvent *TokenEvent, tokenBalance uint64, sellPercentage float64) (map[string]*CurveCalculationResult, error) {
-	return s.curveManager.SimulateSellImpact(ctx, tokenEvent.BondingCurve, tokenBalance)
-}
-
-// GetCurrentMarketData returns current market data for a token
-func (s *Seller) GetCurrentMarketData(ctx context.Context, tokenEvent *TokenEvent) (map[string]interface{}, error) {
-	return s.curveManager.GetMarketStats(ctx, tokenEvent.BondingCurve)
-}

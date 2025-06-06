@@ -13,7 +13,6 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// WSClient represents a WebSocket client for Solana with enhanced debugging
 type WSClient struct {
 	url            string
 	conn           *websocket.Conn
@@ -299,12 +298,6 @@ func (ws *WSClient) sendMessage(message WSMessage) error {
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
-	ws.logger.WithFields(logrus.Fields{
-		"method":       message.Method,
-		"id":           message.ID,
-		"message_size": len(data),
-	}).Debug("📤 Sending WebSocket message")
-
 	err = conn.WriteMessage(websocket.TextMessage, data)
 	if err == nil {
 		ws.messagesSent++
@@ -432,11 +425,6 @@ func (ws *WSClient) handleBlockNotification(params interface{}) {
 		return
 	}
 
-	ws.logger.WithFields(logrus.Fields{
-		"slot":         notification.Result.Value.Slot,
-		"subscription": notification.Subscription,
-	}).Debug("📦 Block notification received")
-
 	// Find and call the handler
 	ws.mu.RLock()
 	for _, subscription := range ws.subscriptions {
@@ -465,26 +453,6 @@ func (ws *WSClient) handleLogsNotification(params interface{}) {
 	if err := json.Unmarshal(data, &notification); err != nil {
 		ws.logger.WithError(err).Error("❌ Failed to unmarshal logs notification")
 		return
-	}
-
-	ws.logger.WithFields(logrus.Fields{
-		"signature":    notification.Result.Value.Signature,
-		"subscription": notification.Subscription,
-		"logs_count":   len(notification.Result.Value.Logs),
-		"slot":         notification.Result.Context.Slot,
-		"has_error":    notification.Result.Value.Err != nil,
-	}).Debug("📋 Logs notification received")
-
-	// Debug: Log some of the actual log messages
-	if ws.logger.Level == logrus.DebugLevel {
-		for i, log := range notification.Result.Value.Logs {
-			if i < 3 { // Only log first 3 to avoid spam
-				ws.logger.Debugf("  Log[%d]: %s", i, log)
-			}
-		}
-		if len(notification.Result.Value.Logs) > 3 {
-			ws.logger.Debugf("  ... and %d more logs", len(notification.Result.Value.Logs)-3)
-		}
 	}
 
 	// Find and call the handler

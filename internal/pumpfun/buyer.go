@@ -1,4 +1,3 @@
-// internal/pumpfun/buyer.go
 package pumpfun
 
 import (
@@ -12,7 +11,6 @@ import (
 	"pump-fun-bot-go/internal/wallet"
 
 	"github.com/gagliardetto/solana-go"
-	"github.com/gagliardetto/solana-go/programs/associated-token-account"
 )
 
 // Buyer handles token purchase operations
@@ -169,11 +167,7 @@ func (b *Buyer) executeBuyTransaction(ctx context.Context, request BuyRequest) (
 }
 
 func (b *Buyer) createAssociatedAccountInstruction(mint solana.PublicKey) solana.Instruction {
-	return associatedtokenaccount.NewCreateInstruction(
-		b.wallet.GetPublicKey(), // payer
-		b.wallet.GetPublicKey(), // wallet
-		mint,                    // mint
-	).Build()
+	return CreateAssociatedAccountInstruction(mint, b.wallet.GetPublicKey())
 }
 
 // createBuyInstruction creates the pump.fun buy instruction
@@ -318,19 +312,4 @@ func (b *Buyer) CreateBuyTransaction(ctx context.Context, request BuyRequest) (*
 	}
 
 	return transaction, nil
-}
-
-// EstimateBuyCost estimates the cost of a buy operation
-func (b *Buyer) EstimateBuyCost(request BuyRequest) (uint64, error) {
-	if request.UseTokenAmount {
-		// For token-based trading, estimate SOL cost
-		estimatedPrice := 0.00001 // Very rough estimate
-		estimatedSOL := float64(request.AmountTokens) * estimatedPrice
-		slippageFactor := 1.0 + float64(request.MaxSlippage)/10000.0
-		return config.ConvertSOLToLamports(estimatedSOL * slippageFactor), nil
-	} else {
-		// For SOL-based trading, use the SOL amount directly
-		slippageFactor := 1.0 + float64(request.MaxSlippage)/10000.0
-		return config.ConvertSOLToLamports(request.AmountSOL * slippageFactor), nil
-	}
 }

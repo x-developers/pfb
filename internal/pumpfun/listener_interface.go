@@ -39,17 +39,6 @@ type ListenerConfig struct {
 	NetworkType string // "mainnet" or "devnet"
 }
 
-// DefaultListenerConfig returns default listener configuration
-func DefaultListenerConfig(cfg *config.Config, logger *logger.Logger) *ListenerConfig {
-	return &ListenerConfig{
-		Config:      cfg,
-		Logger:      logger,
-		Context:     context.Background(),
-		BufferSize:  100,
-		NetworkType: cfg.Network,
-	}
-}
-
 // ListenerStats represents common statistics for all listeners
 type ListenerStats struct {
 	ListenerType        string  `json:"listener_type"`
@@ -241,12 +230,5 @@ func CreatorFilter(creators []string) TokenFilter {
 func FreshnessFilter(maxAge time.Duration) TokenFilter {
 	return func(token *TokenEvent) bool {
 		return token.GetAge() <= maxAge
-	}
-}
-
-// ConfirmedFilter creates a filter that only allows confirmed transactions
-func ConfirmedFilter() TokenFilter {
-	return func(token *TokenEvent) bool {
-		return token.IsConfirmed
 	}
 }
