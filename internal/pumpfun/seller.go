@@ -129,50 +129,38 @@ func (s *Seller) performSell(request SellRequest, startTime time.Time) *SellResu
 		Success: false,
 	}
 
-	// Get ATA address for the token
-	ataAddress, err := s.wallet.GetAssociatedTokenAddress(request.TokenEvent.Mint)
-	if err != nil {
-		result.Error = fmt.Sprintf("failed to get ATA address: %v", err)
-		result.TotalTime = time.Since(startTime)
-		return result
-	}
-
-	s.logger.WithField("ata_address", ataAddress.String()).Debug("🏦 ATA address obtained")
-
-	// Get token balance
-	var tokenBalance uint64
+	// Calculate fixed sell amount based on configuration
+	var sellAmount uint64
 	if s.config.IsTokenBasedTrading() {
-		tokenBalance = s.config.Trading.BuyAmountTokens
-	} else {
-		balance, err := s.rpcClient.GetTokenBalance(ctx, ataAddress.String())
-		if err != nil {
-			result.Error = fmt.Sprintf("failed to get token balance: %v", err)
-			result.TotalTime = time.Since(startTime)
-			return result
+		// Use the same fixed amount that was purchased
+		sellAmount = s.config.Trading.BuyAmountTokens
+
+		// Apply sell percentage if less than 100%
+		if request.SellPercentage < 100.0 {
+			sellAmount = uint64(float64(sellAmount) * (request.SellPercentage / 100.0))
 		}
-		tokenBalance = balance
+	} else {
+		// For SOL-based trading, estimate token amount from SOL amount
+		// This is a rough estimation - in practice you'd query the actual balance
+		estimatedTokens := uint64(s.config.Trading.BuyAmountSOL * 100000) // Rough conversion
+		sellAmount = uint64(float64(estimatedTokens) * (request.SellPercentage / 100.0))
 	}
 
-	if tokenBalance == 0 {
-		result.Error = "no tokens to sell"
+	if sellAmount == 0 {
+		result.Error = "calculated sell amount is zero"
 		result.TotalTime = time.Since(startTime)
 		return result
-	}
-
-	// Calculate amount to sell based on percentage
-	sellAmount := uint64(float64(tokenBalance) * (request.SellPercentage / 100.0))
-	if sellAmount == 0 {
-		sellAmount = tokenBalance // Sell all if calculation results in 0
 	}
 
 	s.logger.WithFields(map[string]interface{}{
-		"token_balance":   tokenBalance,
 		"sell_amount":     sellAmount,
 		"sell_percentage": request.SellPercentage,
-	}).Info("💰 Calculated sell amount")
+		"token_based":     s.config.IsTokenBasedTrading(),
+	}).Info("💰 Using fixed sell amount")
 
 	// Execute sell transaction
-	sellResult, err := s.executeSellTransaction(ctx, request.TokenEvent, sellAmount, ataAddress)
+
+	sellResult, err := s.executeSellTransaction(ctx, request.TokenEvent, sellAmount)
 	if err != nil {
 		result.Error = fmt.Sprintf("sell transaction failed: %v", err)
 		result.TotalTime = time.Since(startTime)
@@ -180,32 +168,97 @@ func (s *Seller) performSell(request SellRequest, startTime time.Time) *SellResu
 	}
 
 	result.SellResult = sellResult
+	result.Success = sellResult != nil && sellResult.Success
 
-	// Close ATA if requested and all tokens were sold
-	if request.CloseATA && sellAmount == tokenBalance {
+	// Close ATA if requested and selling 100%
+	if result.Success && request.SellPercentage >= 100.0 {
 		s.logger.Info("🗑️ Closing ATA account...")
-		closeResult := s.closeATA(ctx, ataAddress)
-		result.CloseResult = closeResult
+		ataAddress, err := s.wallet.GetAssociatedTokenAddress(request.TokenEvent.Mint)
+		if err != nil {
+			s.logger.WithError(err).Warn("Failed to get ATA address for closing")
+		} else {
+			closeResult := s.closeATA(ctx, ataAddress)
+			result.CloseResult = closeResult
+		}
 	}
 
-	result.Success = sellResult != nil && sellResult.Success
 	result.TotalTime = time.Since(startTime)
 
 	return result
 }
 
-// executeSellTransaction executes the sell transaction
+// executeSellTransaction executes the sell transaction (similar to executeBuyTransaction)
 func (s *Seller) executeSellTransaction(
 	ctx context.Context,
 	tokenEvent *TokenEvent,
 	sellAmount uint64,
-	ataAddress solana.PublicKey,
 ) (*TradeResult, error) {
 	startTime := time.Now()
 
+	s.logger.WithFields(map[string]interface{}{
+		"mint":        tokenEvent.Mint.String(),
+		"sell_amount": sellAmount,
+		"name":        tokenEvent.Name,
+		"symbol":      tokenEvent.Symbol,
+	}).Info("🛒 Executing token sale")
+
+	// Create and send sell transaction
+	transaction, err := s.CreateSellTransaction(ctx, tokenEvent, sellAmount)
+	fmt.Println(transaction.String())
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to create sell transaction: %w", err)
+	}
+
+	// Send transaction
+	signature, err := s.rpcClient.SendAndConfirmTransaction(ctx, transaction)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send sell transaction: %w", err)
+	}
+
+	// Calculate estimated SOL received (simplified calculation)
+	estimatedSOL := s.estimateSOLReceived(sellAmount)
+
+	// Calculate price
+	price := 0.0
+	if sellAmount > 0 {
+		price = estimatedSOL / float64(sellAmount)
+	}
+
+	sellTime := time.Since(startTime)
+
+	// Update statistics
+	s.updateStatistics(sellTime, estimatedSOL, true)
+
+	s.logger.WithFields(map[string]interface{}{
+		"signature":     signature.String(),
+		"sell_time_ms":  sellTime.Milliseconds(),
+		"sell_amount":   sellAmount,
+		"estimated_sol": estimatedSOL,
+		"price":         price,
+	}).Info("✅ Token sale successful")
+
+	return &TradeResult{
+		Success:      true,
+		Signature:    signature,
+		AmountSOL:    estimatedSOL,
+		AmountTokens: sellAmount,
+		Price:        price,
+		TradeTime:    sellTime.Milliseconds(),
+	}, nil
+}
+
+// CreateSellTransaction creates a sell transaction without executing it
+func (s *Seller) CreateSellTransaction(ctx context.Context, tokenEvent *TokenEvent, sellAmount uint64) (*solana.Transaction, error) {
+	// Get ATA address for the token
+	ataAddress, err := s.wallet.GetAssociatedTokenAddress(tokenEvent.Mint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ATA address: %w", err)
+	}
+
 	// Create sell instruction
 	sellInstruction := s.createSellInstruction(tokenEvent, sellAmount, ataAddress)
-
+	s.logger.LogInstruction(sellInstruction)
 	// Get recent blockhash
 	blockhash, err := s.rpcClient.GetLatestBlockhash(ctx)
 	if err != nil {
@@ -232,40 +285,14 @@ func (s *Seller) executeSellTransaction(
 			return nil
 		},
 	)
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to sign transaction: %w", err)
+		return transaction, fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
-	// Send transaction
-	signature, err := s.rpcClient.SendAndConfirmTransaction(ctx, transaction)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send transaction: %w", err)
-	}
+	fmt.Printf(transaction.String())
 
-	sellTime := time.Since(startTime)
-
-	// Estimate received SOL (simplified calculation)
-	estimatedSOL := s.estimateSOLReceived(sellAmount)
-
-	// Update statistics
-	s.updateStatistics(sellTime, estimatedSOL, true)
-
-	s.logger.WithFields(map[string]interface{}{
-		"signature":     signature,
-		"sell_amount":   sellAmount,
-		"estimated_sol": estimatedSOL,
-		"sell_time_ms":  sellTime.Milliseconds(),
-		"auto_sell":     true,
-	}).Info("✅ Sell transaction executed")
-
-	return &TradeResult{
-		Success:      true,
-		Signature:    signature,
-		AmountSOL:    estimatedSOL,
-		AmountTokens: sellAmount,
-		Price:        estimatedSOL / float64(sellAmount),
-		TradeTime:    sellTime.Milliseconds(),
-	}, nil
+	return transaction, nil
 }
 
 // createSellInstruction creates a pump.fun sell instruction
@@ -278,13 +305,6 @@ func (s *Seller) createSellInstruction(
 	estimatedSOL := s.estimateSOLReceived(sellAmount)
 	slippageFactor := 1.0 - float64(s.config.Trading.SlippageBP)/10000.0
 	minSolOutput := uint64(estimatedSOL * slippageFactor * config.LamportsPerSol)
-
-	// Create sell instruction data
-	discriminator := []byte{0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad} // sell discriminator
-	data := make([]byte, 24)
-	copy(data[0:8], discriminator)
-	binary.LittleEndian.PutUint64(data[8:16], sellAmount)
-	binary.LittleEndian.PutUint64(data[16:24], minSolOutput)
 
 	// Get pump.fun program constants
 	pumpFunProgram := solana.MustPublicKeyFromBase58("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
@@ -302,15 +322,33 @@ func (s *Seller) createSellInstruction(
 		{PublicKey: s.wallet.GetPublicKey(), IsWritable: true, IsSigner: true},
 		{PublicKey: solana.SystemProgramID, IsWritable: false, IsSigner: false},
 		{PublicKey: solana.TokenProgramID, IsWritable: false, IsSigner: false},
+		{PublicKey: tokenEvent.CreatorVault, IsWritable: true, IsSigner: false},
+
 		{PublicKey: pumpFunEventAuthority, IsWritable: false, IsSigner: false},
 		{PublicKey: pumpFunProgram, IsWritable: false, IsSigner: false},
 	}
+
+	// Create instruction data
+	data := s.createSellInstructionData(sellAmount, minSolOutput)
 
 	return solana.NewInstruction(
 		pumpFunProgram,
 		accounts,
 		data,
 	)
+}
+
+// createSellInstructionData creates the sell instruction data
+func (s *Seller) createSellInstructionData(sellAmount uint64, minSolOutput uint64) []byte {
+	// Sell instruction discriminator for pump.fun
+	discriminator := uint64(12502976635542562355) // sell discriminator from decoder.go
+
+	data := make([]byte, 24)
+	binary.LittleEndian.PutUint64(data[0:8], discriminator)
+	binary.LittleEndian.PutUint64(data[8:16], sellAmount)
+	binary.LittleEndian.PutUint64(data[16:24], minSolOutput)
+
+	return data
 }
 
 // closeATA closes the Associated Token Account and reclaims rent
