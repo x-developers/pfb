@@ -53,6 +53,3 @@ __debug_bin
 
 # Отчёты и артефакты CI
 *.lcov
-
-# Go modules
-go.sum

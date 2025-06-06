@@ -37,6 +37,7 @@ services:
 
       # Configuration override
       - ./configs/bot.yaml:/app/configs/bot.yaml:ro
+      - ./.env:/app/.env:ro
 
     # Resource limits
     deploy:

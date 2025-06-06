@@ -26,7 +26,7 @@ import (
 type TokenInfo struct {
 	Mint              solana.PublicKey       `json:"mint"`
 	ATAAddress        solana.PublicKey       `json:"ata_address"`
-	Creator           solana.PublicKey       `json:"ata_address"`
+	Creator           solana.PublicKey       `json:"creator"`
 	Balance           uint64                 `json:"balance"`
 	UIAmount          float64                `json:"ui_amount"`
 	Decimals          uint8                  `json:"decimals"`
@@ -159,7 +159,10 @@ func main() {
 		fmt.Println("⚠️ You will LOSE all tokens in these accounts!")
 		fmt.Print("Type 'YES' to continue: ")
 		var confirmation string
-		fmt.Scanln(&confirmation)
+		_, err := fmt.Scanln(&confirmation)
+		if err != nil {
+			return
+		}
 		if confirmation == "YES" {
 			err = manager.emergencyCloseAllATAs()
 		} else {
@@ -660,23 +663,23 @@ func (wtm *WalletTokenManager) sellSpecificTokenWithStrategy(mintAddress, strate
 	}
 
 	// Get token info with curve data
-	token, err := wtm.getTokenInfoWithCurveData(mint)
+	tokenInfo, err := wtm.getTokenInfoWithCurveData(mint)
 	if err != nil {
 		return fmt.Errorf("failed to get token info: %w", err)
 	}
 
-	if token.Balance == 0 {
+	if tokenInfo.Balance == 0 {
 		fmt.Println("💭 Token balance is zero, nothing to sell")
 		return nil
 	}
 
-	if !token.IsPumpFunToken {
+	if !tokenInfo.IsPumpFunToken {
 		return fmt.Errorf("token is not a pump.fun token, cannot sell using pump.fun contract")
 	}
 
-	fmt.Printf("Token balance: %v tokens (%.6f UI)\n", token.Balance, token.UIAmount)
+	fmt.Printf("Token balance: %v tokens (%.6f UI)\n", tokenInfo.Balance, tokenInfo.UIAmount)
 
-	result := wtm.sellTokenWithStrategy(token, strategy)
+	result := wtm.sellTokenWithStrategy(tokenInfo, strategy)
 
 	if result.Success {
 		fmt.Printf("✅ Successfully sold token using '%s' strategy!\n", strategy)
@@ -822,7 +825,10 @@ func (wtm *WalletTokenManager) calculateSellAmountByStrategy(token TokenInfo, st
 func (wtm *WalletTokenManager) validateSellByStrategy(strategy string, curveCalc *pumpfun.CurveCalculationResult, marketStats map[string]interface{}) bool {
 	maxPriceImpact := 5.0 // Default 5%
 	if envImpact := os.Getenv("PUMPBOT_MAX_PRICE_IMPACT"); envImpact != "" {
-		fmt.Sscanf(envImpact, "%f", &maxPriceImpact)
+		_, err := fmt.Sscanf(envImpact, "%f", &maxPriceImpact)
+		if err != nil {
+			return false
+		}
 	}
 
 	switch strategy {
@@ -836,7 +842,10 @@ func (wtm *WalletTokenManager) validateSellByStrategy(strategy string, curveCalc
 		liquidity, _ := marketStats["liquidity_sol"].(float64)
 		minLiquidity := 1.0
 		if envLiq := os.Getenv("PUMPBOT_MIN_LIQUIDITY_SOL"); envLiq != "" {
-			fmt.Sscanf(envLiq, "%f", &minLiquidity)
+			_, err := fmt.Sscanf(envLiq, "%f", &minLiquidity)
+			if err != nil {
+				return false
+			}
 		}
 
 		return curveCalc.PriceImpact <= maxPriceImpact && liquidity >= minLiquidity
@@ -977,24 +986,22 @@ func (wtm *WalletTokenManager) getAllTokensWithCurveData() ([]TokenInfo, error) 
 }
 
 func (wtm *WalletTokenManager) getTokenInfoWithCurveData(mint solana.PublicKey) (TokenInfo, error) {
-	token, err := wtm.getTokenInfo(mint)
+	tokenInfo, err := wtm.getTokenInfo(mint)
 	if err != nil {
 		return TokenInfo{}, err
 	}
 
-	if token.IsPumpFunToken {
-		marketStats, err := wtm.curveManager.GetMarketStats(wtm.ctx, token.BondingCurve)
+	if tokenInfo.IsPumpFunToken {
+		marketStats, err := wtm.curveManager.GetMarketStats(wtm.ctx, tokenInfo.BondingCurve)
 		if err != nil {
-			wtm.logger.WithError(err).Debug("Failed to get market stats for token")
+			wtm.logger.WithError(err).Debug("Failed to get market stats for tokenInfo")
 		} else {
-			token.MarketStats = marketStats
+			tokenInfo.MarketStats = marketStats
 		}
 	}
 
-	return token, nil
+	return tokenInfo, nil
 }
-
-// ... [Rest of the original methods: getAllTokens, getTokenInfo, closeATA, etc. remain unchanged]
 
 func (wtm *WalletTokenManager) getAllTokens() ([]TokenInfo, error) {
 	fmt.Println("🔍 Getting token accounts (with rate limiting)...")
