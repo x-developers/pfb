@@ -238,10 +238,11 @@ func NewApp(cfg *config.Config, log *logger.Logger) (*App, error) {
 
 	// Initialize Solana client
 	solanaClient := client.NewClient(client.ClientConfig{
-		RPCEndpoint: cfg.RPCUrl,
-		WSEndpoint:  cfg.WSUrl,
-		APIKey:      cfg.RPCAPIKey,
-		Timeout:     30 * time.Second,
+		RPCEndpoint:  cfg.RPCUrl,
+		JITOEndpoint: cfg.Jito.BlockEngineURL,
+		WSEndpoint:   cfg.WSUrl,
+		APIKey:       cfg.RPCAPIKey,
+		Timeout:      30 * time.Second,
 	}, log.Logger)
 
 	wsClient := client.NewWSClient(cfg.WSUrl, log.Logger)

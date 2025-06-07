@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"github.com/gagliardetto/solana-go/programs/token"
 	confirm "github.com/gagliardetto/solana-go/rpc/sendAndConfirmTransaction"
@@ -14,11 +15,56 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// BundleRequest represents a Jito bundle request
+type BundleRequest struct {
+	Transactions []string `json:"transactions"`
+}
+
+// BundleResponse represents a Jito bundle response
+type BundleResponse struct {
+	ID      string `json:"id"`
+	Jsonrpc string `json:"jsonrpc"`
+	Result  string `json:"result"`
+	Error   *struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// BundleStatus represents bundle status
+type BundleStatus struct {
+	Context struct {
+		Slot uint64 `json:"slot"`
+	} `json:"context"`
+	Value struct {
+		BundleID                  string      `json:"bundle_id"`
+		Transactions              []string    `json:"transactions"`
+		Slot                      uint64      `json:"slot"`
+		ConfirmationStatus        string      `json:"confirmation_status"`
+		Err                       interface{} `json:"err"`
+		LandedSlot                *uint64     `json:"landed_slot,omitempty"`
+		ExecutedTransactionCount  int         `json:"executed_transaction_count"`
+		RejectedTransactionCount  int         `json:"rejected_transaction_count"`
+		DroppedTransactionCount   int         `json:"dropped_transaction_count"`
+		ConfirmedTransactionCount int         `json:"confirmed_transaction_count"`
+		FinalizedTransactionCount int         `json:"finalized_transaction_count"`
+	} `json:"value"`
+}
+
+// TipInstruction represents a Jito tip instruction
+type TipInstruction struct {
+	ProgramID solana.PublicKey
+	Accounts  []*solana.AccountMeta
+	Data      []byte
+}
+
 // Client represents a Solana RPC client wrapper with blockhash caching
 type Client struct {
-	client   *rpc.Client
-	wsClient *ws.Client
-	logger   *logrus.Logger
+	config     *ClientConfig
+	client     *rpc.Client
+	jitoClient *rpc.Client
+	wsClient   *ws.Client
+	logger     *logrus.Logger
 
 	// Blockhash caching
 	cachedBlockhash    solana.Hash
@@ -29,10 +75,11 @@ type Client struct {
 
 // ClientConfig contains configuration for Solana client
 type ClientConfig struct {
-	RPCEndpoint string
-	WSEndpoint  string
-	APIKey      string
-	Timeout     time.Duration
+	RPCEndpoint  string
+	JITOEndpoint string
+	WSEndpoint   string
+	APIKey       string
+	Timeout      time.Duration
 }
 
 // NewClient creates a new Solana RPC client with blockhash caching
@@ -55,10 +102,22 @@ func NewClient(config ClientConfig, logger *logrus.Logger) *Client {
 		})
 	}
 
+	var jitoClient *rpc.Client
+	if config.JITOEndpoint != "" {
+		jitoClient = rpc.NewWithHeaders(config.JITOEndpoint, map[string]string{
+			"User-Agent":   "python-httpx/0.28.1",
+			"Content-Type": "application/json",
+			"Connection":   "keep-alive",
+		})
+	} else {
+	}
+
 	wsClient, _ := ws.Connect(context.Background(), config.WSEndpoint)
 
 	client := &Client{
+		config:       &config,
 		client:       rpcClient,
+		jitoClient:   jitoClient,
 		wsClient:     wsClient,
 		logger:       logger,
 		blockhashTTL: 2 * time.Second, // Blockhash is valid for ~60-90 seconds, cache for 30
@@ -163,6 +222,15 @@ func (c *Client) GetTokenBalance(ctx context.Context, address string) (uint64, e
 	return uint64(*result.Value.UiAmount), nil
 }
 
+func (c *Client) getJitoClient() *rpc.Client {
+
+	if c.config.JITOEndpoint == "" {
+		return c.client
+	}
+
+	return c.jitoClient
+}
+
 // SendAndConfirmTransaction sends a transaction and confirms it
 func (c *Client) SendAndConfirmTransaction(ctx context.Context, transaction *solana.Transaction) (solana.Signature, error) {
 	opts := rpc.TransactionOpts{
@@ -171,7 +239,7 @@ func (c *Client) SendAndConfirmTransaction(ctx context.Context, transaction *sol
 	}
 	sig, err := confirm.SendAndConfirmTransactionWithOpts(
 		ctx,
-		c.client,
+		c.getJitoClient(),
 		c.wsClient,
 		transaction,
 		opts,
@@ -192,6 +260,41 @@ func (c *Client) SendTransaction(ctx context.Context, transaction *solana.Transa
 	}
 
 	return sig, nil
+}
+
+// SendBundle sends a bundle to Jito with tip transaction
+func (c *Client) SendBundle(ctx context.Context, transactions []*solana.Transaction) (string, error) {
+	// Add tip transaction to bundle
+	bundleTransactions := make([]string, 0, len(transactions)+1)
+
+	// Convert transactions to base64
+	for i, tx := range transactions {
+		txBytes, err := tx.MarshalBinary()
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal transaction %d: %w", i, err)
+		}
+		bundleTransactions = append(bundleTransactions, base64.StdEncoding.EncodeToString(txBytes))
+	}
+
+	// Use the RPC client's RPCCallForInto method
+	var response BundleResponse
+
+	// Make RPC call
+	err := c.jitoClient.RPCCallForInto(ctx, &response, "sendBundle", []interface{}{bundleTransactions})
+	if err != nil {
+		return "", fmt.Errorf("RPC call failed: %w", err)
+	}
+
+	// Check for RPC error
+	if response.Error != nil {
+		return "", fmt.Errorf("Jito RPC error: %s (code: %d)", response.Error.Message, response.Error.Code)
+	}
+
+	if response.Result == "" {
+		return "", fmt.Errorf("empty bundle ID in response")
+	}
+
+	return response.Result, nil
 }
 
 // ConfirmTransaction confirms a transaction

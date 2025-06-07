@@ -39,6 +39,9 @@ type Config struct {
 
 	// Ultra Fast Mode settings
 	UltraFast UltraFastConfig `mapstructure:"ultra_fast" yaml:"ultra_fast"`
+
+	// Jito settings
+	Jito JitoConfig `mapstructure:"jito" yaml:"jito"`
 }
 
 type ListenerType string
@@ -48,6 +51,26 @@ const (
 	BlocksListenerType ListenerType = "blocks"
 	MultiListenerType  ListenerType = "multi"
 )
+
+// JitoConfig contains Jito-related settings
+type JitoConfig struct {
+	Enabled        bool   `mapstructure:"enabled" yaml:"enabled"`
+	BlockEngineURL string `mapstructure:"block_engine_url" yaml:"block_engine_url"`
+	APIKey         string `mapstructure:"api_key" yaml:"api_key"`
+	Timeout        int    `mapstructure:"timeout_ms" yaml:"timeout_ms"`
+
+	// Advanced settings
+	FallbackEnabled     bool `mapstructure:"fallback_enabled" yaml:"fallback_enabled"`
+	MaxBundleSize       int  `mapstructure:"max_bundle_size" yaml:"max_bundle_size"`
+	BundleRetryAttempts int  `mapstructure:"bundle_retry_attempts" yaml:"bundle_retry_attempts"`
+
+	// MEV Protection
+	TipLamports    uint64  `mapstructure:"tip_lamports" yaml:"tip_lamports"`
+	TipPercent     float64 `mapstructure:"tip_percent" yaml:"tip_percent"`
+	UseRandomTip   bool    `mapstructure:"use_random_tip" yaml:"use_random_tip"`
+	MinTipLamports uint64  `mapstructure:"min_tip_lamports" yaml:"min_tip_lamports"`
+	MaxTipLamports uint64  `mapstructure:"max_tip_lamports" yaml:"max_tip_lamports"`
+}
 
 // ListenerConfig contains listener-specific configuration
 type ListenerConfig struct {
@@ -181,6 +204,7 @@ func LoadConfig(configPath string, envPath string) (*Config, error) {
 	setDefaults()
 	setListenerDefaults()
 	setDefaultsUltraFast()
+	setJitoDefaults()
 
 	// Set config file path
 	if configPath != "" {
@@ -204,6 +228,7 @@ func LoadConfig(configPath string, envPath string) (*Config, error) {
 	bindEnvVariables()
 	bindListenerEnvVariables()
 	bindUltraFastEnvVariables()
+	bindJitoEnvVariables()
 
 	// Read config file
 	if err := viper.ReadInConfig(); err != nil {
@@ -636,7 +661,6 @@ func validateListenerConfig(config *Config) error {
 	return nil
 }
 
-// GetConfigFromEnv loads configuration from environment variables only (remove Jito)
 func GetConfigFromEnv(envPath string) *Config {
 	fmt.Printf("Loading configuration from environment variables only...\n")
 
@@ -698,7 +722,108 @@ func GetConfigFromEnv(envPath string) *Config {
 		config.WSUrl = GetWSEndpoint(config.Network)
 	}
 
+	config.Jito = JitoConfig{
+		Enabled:             getEnvBool("PUMPBOT_JITO_ENABLED", true),
+		BlockEngineURL:      getEnvString("PUMPBOT_JITO_BLOCK_ENGINE_URL", ""),
+		APIKey:              getEnvString("PUMPBOT_JITO_API_KEY", ""),
+		Timeout:             getEnvInt("PUMPBOT_JITO_TIMEOUT_MS", 30000),
+		FallbackEnabled:     getEnvBool("PUMPBOT_JITO_FALLBACK_ENABLED", true),
+		MaxBundleSize:       getEnvInt("PUMPBOT_JITO_MAX_BUNDLE_SIZE", 5),
+		BundleRetryAttempts: getEnvInt("PUMPBOT_JITO_BUNDLE_RETRY_ATTEMPTS", 3),
+		TipLamports:         uint64(getEnvInt64("PUMPBOT_JITO_TIP_LAMPORTS", 10000)),
+		TipPercent:          getEnvFloat("PUMPBOT_JITO_TIP_PERCENT", 0.0),
+		UseRandomTip:        getEnvBool("PUMPBOT_JITO_USE_RANDOM_TIP", false),
+		MinTipLamports:      uint64(getEnvInt64("PUMPBOT_JITO_MIN_TIP_LAMPORTS", 1000)),
+		MaxTipLamports:      uint64(getEnvInt64("PUMPBOT_JITO_MAX_TIP_LAMPORTS", 100000)),
+	}
+
 	return config
+}
+
+// Add to setDefaults function
+func setJitoDefaults() {
+	viper.SetDefault("jito.enabled", false)
+	viper.SetDefault("jito.block_engine_url", "")
+	viper.SetDefault("jito.timeout_ms", 30000)
+	viper.SetDefault("jito.fallback_enabled", true)
+	viper.SetDefault("jito.max_bundle_size", 5)
+	viper.SetDefault("jito.bundle_retry_attempts", 3)
+	viper.SetDefault("jito.tip_lamports", 10000)
+	viper.SetDefault("jito.tip_percent", 0.0)
+	viper.SetDefault("jito.use_random_tip", false)
+	viper.SetDefault("jito.min_tip_lamports", 1000)
+	viper.SetDefault("jito.max_tip_lamports", 100000)
+}
+
+// Add to bindEnvVariables function
+func bindJitoEnvVariables() {
+	viper.BindEnv("jito.enabled", "PUMPBOT_JITO_ENABLED")
+	viper.BindEnv("jito.block_engine_url", "PUMPBOT_JITO_BLOCK_ENGINE_URL")
+	viper.BindEnv("jito.api_key", "PUMPBOT_JITO_API_KEY")
+	viper.BindEnv("jito.timeout_ms", "PUMPBOT_JITO_TIMEOUT_MS")
+	viper.BindEnv("jito.fallback_enabled", "PUMPBOT_JITO_FALLBACK_ENABLED")
+	viper.BindEnv("jito.max_bundle_size", "PUMPBOT_JITO_MAX_BUNDLE_SIZE")
+	viper.BindEnv("jito.bundle_retry_attempts", "PUMPBOT_JITO_BUNDLE_RETRY_ATTEMPTS")
+	viper.BindEnv("jito.tip_lamports", "PUMPBOT_JITO_TIP_LAMPORTS")
+	viper.BindEnv("jito.tip_percent", "PUMPBOT_JITO_TIP_PERCENT")
+	viper.BindEnv("jito.use_random_tip", "PUMPBOT_JITO_USE_RANDOM_TIP")
+	viper.BindEnv("jito.min_tip_lamports", "PUMPBOT_JITO_MIN_TIP_LAMPORTS")
+	viper.BindEnv("jito.max_tip_lamports", "PUMPBOT_JITO_MAX_TIP_LAMPORTS")
+}
+
+// Add helper methods to Config
+func (c *Config) IsJitoEnabled() bool {
+	return c.Jito.Enabled && c.Jito.BlockEngineURL != ""
+}
+
+func (c *Config) GetJitoBlockEngineURL() string {
+	if c.Jito.BlockEngineURL != "" {
+		return c.Jito.BlockEngineURL
+	}
+
+	// Default based on network
+	switch c.Network {
+	case "mainnet":
+		return "https://mainnet.block-engine.jito.wtf/api/v1/bundles"
+	case "devnet":
+		return "https://devnet.block-engine.jito.wtf/api/v1/bundles"
+	default:
+		return "https://mainnet.block-engine.jito.wtf/api/v1/bundles"
+	}
+}
+
+func (c *Config) GetJitoTimeout() time.Duration {
+	if c.Jito.Timeout > 0 {
+		return time.Duration(c.Jito.Timeout) * time.Millisecond
+	}
+	return 30 * time.Second
+}
+
+// Add to validateConfig function
+func validateJitoConfig(config *Config) error {
+	if !config.Jito.Enabled {
+		return nil // Skip validation if Jito is disabled
+	}
+
+	if config.Jito.BlockEngineURL == "" {
+		return fmt.Errorf("jito.block_engine_url is required when Jito is enabled")
+	}
+
+	if config.Jito.Timeout < 1000 {
+		return fmt.Errorf("jito.timeout_ms must be at least 1000ms")
+	}
+
+	if config.Jito.MaxBundleSize < 1 || config.Jito.MaxBundleSize > 10 {
+		return fmt.Errorf("jito.max_bundle_size must be between 1 and 10")
+	}
+
+	if config.Jito.UseRandomTip {
+		if config.Jito.MinTipLamports >= config.Jito.MaxTipLamports {
+			return fmt.Errorf("jito.min_tip_lamports must be less than max_tip_lamports")
+		}
+	}
+
+	return nil
 }
 
 // Add other helper methods...
