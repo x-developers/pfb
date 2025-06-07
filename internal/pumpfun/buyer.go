@@ -301,7 +301,6 @@ func (b *Buyer) CreateBuyTransaction(ctx context.Context, request BuyRequest) (*
 		return nil, fmt.Errorf("failed to create transaction: %w", err)
 	}
 
-	fmt.Println(transaction.String())
 	// Sign transaction
 	_, err = transaction.Sign(
 		func(key solana.PublicKey) *solana.PrivateKey {
