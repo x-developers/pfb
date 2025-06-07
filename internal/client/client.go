@@ -61,7 +61,7 @@ func NewClient(config ClientConfig, logger *logrus.Logger) *Client {
 		client:       rpcClient,
 		wsClient:     wsClient,
 		logger:       logger,
-		blockhashTTL: 10 * time.Second, // Blockhash is valid for ~60-90 seconds, cache for 30
+		blockhashTTL: 2 * time.Second, // Blockhash is valid for ~60-90 seconds, cache for 30
 	}
 
 	// Start blockhash updater in background
@@ -111,7 +111,7 @@ func (c *Client) cacheBlockhash(blockhash solana.Hash) {
 }
 
 func (c *Client) blockhashUpdater() {
-	ticker := time.NewTicker(5 * time.Second) // Update every 5 seconds
+	ticker := time.NewTicker(1 * time.Second) // Update every 5 seconds
 	defer ticker.Stop()
 
 	for {
