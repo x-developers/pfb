@@ -168,11 +168,11 @@ func (fl *FilteredListener) filterTokenEvents() {
 			if passed {
 				select {
 				case fl.tokenChan <- token:
-					fl.config.Logger.WithFields(map[string]interface{}{
-						"mint":   token.Mint.String(),
-						"name":   token.Name,
-						"symbol": token.Symbol,
-					}).Info("✅ Token passed all filters")
+					//fl.config.Logger.WithFields(map[string]interface{}{
+					//	"mint":   token.Mint.String(),
+					//	"name":   token.Name,
+					//	"symbol": token.Symbol,
+					//}).Info("✅ Token passed all filters")
 				default:
 					fl.config.Logger.WithFields(map[string]interface{}{
 						"mint":   token.Mint.String(),

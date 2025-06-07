@@ -166,7 +166,7 @@ func (c *Client) GetTokenBalance(ctx context.Context, address string) (uint64, e
 // SendAndConfirmTransaction sends a transaction and confirms it
 func (c *Client) SendAndConfirmTransaction(ctx context.Context, transaction *solana.Transaction) (solana.Signature, error) {
 	opts := rpc.TransactionOpts{
-		SkipPreflight:       false,
+		SkipPreflight:       true,
 		PreflightCommitment: rpc.CommitmentProcessed,
 	}
 	sig, err := confirm.SendAndConfirmTransactionWithOpts(
