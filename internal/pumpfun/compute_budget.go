@@ -50,7 +50,7 @@ func CreateSetComputeUnitPriceInstruction(microLamports uint64) solana.Instructi
 func GetRecommendedComputeUnitLimit(operationType string) uint32 {
 	switch operationType {
 	case "buy":
-		return 250000 // Standard buy operation
+		return 400000 // Standard buy operation
 	case "sell":
 		return 180000 // Sell operations typically use less
 	default:
