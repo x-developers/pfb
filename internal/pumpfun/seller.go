@@ -293,7 +293,6 @@ func (s *Seller) performCurveAwareSell(request SellRequest, startTime time.Time)
 
 	// Step 7: Close ATA if requested and selling 100%
 	if result.Success && request.SellPercentage >= 100.0 {
-		s.logger.Info("🗑️ Closing ATA account...")
 		ataAddress, err := s.wallet.GetAssociatedTokenAddress(request.TokenEvent.Mint)
 		if err != nil {
 			s.logger.WithError(err).Warn("Failed to get ATA address for closing")
