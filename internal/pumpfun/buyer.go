@@ -19,6 +19,7 @@ type Buyer struct {
 	rpcClient *client.Client
 	logger    *logger.Logger
 	config    *config.Config
+	compute   *ComputeBudgetHelper
 
 	// Statistics
 	totalBuys      int64
@@ -55,11 +56,13 @@ func NewBuyer(
 	logger *logger.Logger,
 	config *config.Config,
 ) *Buyer {
+	compute := NewComputeBudgetHelper(config)
 	return &Buyer{
 		wallet:         wallet,
 		rpcClient:      rpcClient,
 		logger:         logger,
 		config:         config,
+		compute:        compute,
 		fastestBuy:     time.Hour,
 		totalSpent:     0.0,
 		totalBuys:      0,
@@ -164,6 +167,10 @@ func (b *Buyer) executeBuyTransaction(ctx context.Context, request BuyRequest) (
 		AmountTokens: request.AmountTokens,
 		Price:        price,
 	}, nil
+}
+
+func (b *Buyer) createFeeInstructions() []solana.Instruction {
+	return b.compute.GetInstructionsForOperation("buy")
 }
 
 func (b *Buyer) createAssociatedAccountInstruction(mint solana.PublicKey) solana.Instruction {
@@ -273,12 +280,10 @@ func (b *Buyer) CreateBuyTransaction(ctx context.Context, request BuyRequest) (*
 		return nil, fmt.Errorf("failed to get ATA address: %w", err)
 	}
 
-	ataInstruction := b.createAssociatedAccountInstruction(request.TokenEvent.Mint)
-	//b.logger.LogInstruction(ataInstruction)
-	// Create buy instruction
-	buyInstruction := b.createBuyInstruction(request, ataAddress)
-
-	//b.logger.LogInstruction(buyInstruction)
+	var instructions []solana.Instruction
+	instructions = append(instructions, b.createAssociatedAccountInstruction(request.TokenEvent.Mint))
+	instructions = append(instructions, b.createBuyInstruction(request, ataAddress))
+	instructions = append(instructions, b.createFeeInstructions()...)
 
 	// Get recent blockhash
 	blockhash, err := b.rpcClient.GetLatestBlockhash(ctx)
@@ -288,7 +293,7 @@ func (b *Buyer) CreateBuyTransaction(ctx context.Context, request BuyRequest) (*
 
 	// Create transaction
 	transaction, err := solana.NewTransaction(
-		[]solana.Instruction{ataInstruction, buyInstruction},
+		instructions,
 		blockhash,
 		solana.TransactionPayer(b.wallet.GetPublicKey()),
 	)
@@ -296,6 +301,7 @@ func (b *Buyer) CreateBuyTransaction(ctx context.Context, request BuyRequest) (*
 		return nil, fmt.Errorf("failed to create transaction: %w", err)
 	}
 
+	fmt.Println(transaction.String())
 	// Sign transaction
 	_, err = transaction.Sign(
 		func(key solana.PublicKey) *solana.PrivateKey {
